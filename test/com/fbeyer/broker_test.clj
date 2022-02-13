@@ -37,6 +37,22 @@
       (broker/publish! broker {:key ::unwanted-3})
       (is (= {:key ::wanted} (take!! ch))))))
 
+(deftest error-handler-test
+  (let [p        (promise)
+        error-fn (fn [e ctx]
+                   (deliver p [e ctx]))
+        broker   (broker/start {:error-fn error-fn})
+        exc      (ex-info "error test" {})
+        f        (fn [_] (throw exc))
+        msg      {:key ::error-handler-test}]
+    (broker/subscribe-all broker f)
+    (broker/publish! broker msg)
+    (let [[e ctx] (deref p 100 nil)]
+      (is (= exc e))
+      (is (= broker (:broker ctx)))
+      (is (= f (:fn ctx)))
+      (is (= msg (:msg ctx))))))
+
 (deftest stop!-test
   (let [broker (broker/start)
         ch (async/chan)]

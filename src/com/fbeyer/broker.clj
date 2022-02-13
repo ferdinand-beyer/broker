@@ -10,12 +10,12 @@
      :topic-fn - function used to determine the topic of an incoming message
                  (default: :key).
      :error-fn - when a subscribing function throws an exception, this function
-                 will be called with three arguments: the broker, the function,
-                 and the exception.  By default, exceptions will be silently
-                 ignored."
+                 will be called with two arguments: the exception and a map with
+                 keys :broker, :fn, and :msg.  By default, exceptions are
+                 silently ignored."
   [& [{:keys [topic-fn error-fn]
        :or   {topic-fn :key}}]]
-  ;; TODO: Buffers?
+  ;; TODO: Buffers for the source channel and pub channels?
   (let [ch   (async/chan)
         mult (async/mult ch)]
     {::ch   ch
@@ -35,7 +35,8 @@
   (async/close! (::ch broker)))
 
 (defn publish!
-  "Publishes a message.  All subscribers will be notified asynchronously."
+  "Publishes a message.  All subscribers will be notified asynchronously.
+   Returns true unless broker is stopped."
   [broker msg]
   (async/put! (::ch broker) msg))
 
@@ -45,13 +46,17 @@
 (defn- make-fn-chan [broker f]
   (let [ch (async/chan)] ; TODO: Buffer?
     (async/go-loop []
-      (when-let [msg (async/<! ch)]
-        (try
-          (f msg)
-          (catch Throwable e
-            (when-let [err-fn (::error-fn broker)]
-              (err-fn broker f e))))
-        (recur)))
+      (if-let [msg (async/<! ch)]
+        (do
+          (try
+            (f msg)
+            (catch Throwable e
+              (when-let [error-fn (::error-fn broker)]
+                (error-fn e {:broker broker
+                             :fn f
+                             :msg msg}))))
+          (recur))
+        (async/close! ch)))
     ch))
 
 (defn- fn-chan [{::keys [fn-chs] :as broker} f]
@@ -128,8 +133,7 @@
 (defn unsubscribe
   "Unsubscribes a function or channel.  If a topic is given, unsubscribes only
    from this topic.  Otherwise, unsubscribes from all messages.  If fn-or-ch
-   has not subscribed to any messages, this function has no effect.
-   Returns nil."
+   is not a subscriber, this is a no-op.  Returns nil."
   ([{::keys [fn-chs] :as broker} fn-or-ch]
    (when-let [ch (get-sub-chan fn-or-ch fn-chs)]
      (unsub-chan-from-all broker ch)
@@ -142,7 +146,7 @@
 
 (defn unsubscribe-all
   "Unsubscribes all subscribers.  When a topic is given, only subscribers to
-   the given topic will be unsubscribed."
+   the given topic will be unsubscribed.  Returns nil."
   ([broker]
    (unsub-all broker)
    (untap-all broker)
