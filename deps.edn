@@ -7,7 +7,8 @@
  {:dev {:extra-paths ["dev"]}
 
   :test {:extra-paths ["test"]
-         :extra-deps {lambdaisland/kaocha {:mvn/version "1.0.861"}}}
+         :extra-deps {lambdaisland/kaocha {:mvn/version "1.0.861"}
+                      lambdaisland/kaocha-cloverage {:mvn/version "1.0.75"}}}
 
   :test/run
   {:main-opts ["-m" "kaocha.runner"]}
