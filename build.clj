@@ -5,7 +5,7 @@
             [org.corfield.build :as bb]))
 
 (def lib 'com.fbeyer/broker)
-(def base-version "0.1")
+(def base-version "0.2")
 
 (defn- git [& args]
   (let [{:keys [exit out]}
@@ -13,7 +13,7 @@
                     :dir "."
                     :out :capture
                     :err :ignore})]
-    (when (zero? exit)
+    (when (and (zero? exit) out)
       (str/trim-newline out))))
 
 (defn- git-tag []
@@ -23,6 +23,11 @@
                (str/replace tag #"^v" "")
                (format "%s.%s-%s" base-version (b/git-count-revs nil)
                        (if (System/getenv "CI") "ci" "dev"))))
+
+(defn tag [_]
+  (let [tag (format "v%s.%s" base-version (b/git-count-revs nil))]
+    (git "tag" tag)
+    (println "Tagged" tag)))
 
 (defn clean "Clean the target directory." [opts]
   (-> opts
