@@ -4,10 +4,12 @@
             [clojure.test :refer [deftest is testing]]
             [com.fbeyer.broker :as broker]))
 
+(def timeout-ms 100)
+
 (defn- take!! [ch]
   (async/alt!!
     ch ([msg] msg)
-    (async/timeout 100) ::timeout))
+    (async/timeout timeout-ms) ::timeout))
 
 (deftest subscribe-all-test
   (testing "subscribing to all messages with a channel"
@@ -44,6 +46,23 @@
     (broker/publish! broker {::topic ::custom-topic-fn})
     (is (= {::topic ::custom-topic-fn} (take!! ch)))))
 
+(deftest default-error-handler-test
+  (let [thread  (Thread/currentThread)
+        orig    (.getUncaughtExceptionHandler thread)
+        p       (promise)
+        handler (reify Thread$UncaughtExceptionHandler
+                  (uncaughtException [_ _ e] (deliver p e)))
+        broker  (broker/start)
+        exc     (ex-info "error test" {})]
+    (is (= broker/thread-uncaught-exc-handler (::broker/error-fn broker)))
+    (try
+      (.setUncaughtExceptionHandler thread handler)
+      (broker/thread-uncaught-exc-handler exc nil)
+      (finally
+        (.setUncaughtExceptionHandler thread orig)))
+    (let [e (deref p timeout-ms nil)]
+      (is (= exc e)))))
+
 (deftest error-handler-test
   (let [p        (promise)
         error-fn (fn [e ctx]
@@ -54,7 +73,7 @@
         msg      [::error-handler-test]]
     (broker/subscribe-all broker f)
     (broker/publish! broker msg)
-    (let [[e ctx] (deref p 100 nil)]
+    (let [[e ctx] (deref p timeout-ms nil)]
       (is (= exc e))
       (is (= broker (:broker ctx)))
       (is (= f (:fn ctx)))

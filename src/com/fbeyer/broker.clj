@@ -3,6 +3,14 @@
   (:require [clojure.core.async :as async]
             [clojure.core.async.impl.protocols :as async-protocols]))
 
+(defn thread-uncaught-exc-handler
+  "Passes exceptions to the current thread's `UncaughtExceptionHandler`."
+  [e _]
+  (let [thread (Thread/currentThread)]
+    (-> (.getUncaughtExceptionHandler thread)
+        (.uncaughtException thread e)))
+  nil)
+
 (defn start
   "Starts a broker.
    Supported options:
@@ -11,7 +19,7 @@
    * `:error-fn` - when a subscribing function throws an exception, this function
      will be called with two arguments: the exception and a map with keys
      `:broker`, `:fn`, and `:msg`.  With no `:error-fn` (default), exceptions are
-     silently ignored."
+     passed to the current thread's `UncaughtExceptionHandler`."
   ([] (start nil))
   ([opts]
    ;; TODO: Buffers for the source channel and pub channels?
@@ -24,7 +32,7 @@
       ::subs     (atom {})
       ::taps     (atom #{})
       ::fn-chs   (atom {})
-      ::error-fn (:error-fn opts)})))
+      ::error-fn (:error-fn opts thread-uncaught-exc-handler)})))
 
 (defn stop!
   "Stops the broker, closing all internal async channels.
