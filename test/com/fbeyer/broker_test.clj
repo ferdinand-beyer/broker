@@ -37,6 +37,13 @@
       (broker/publish! broker [::unwanted-3])
       (is (= [::wanted] (take!! ch))))))
 
+(deftest topic-fn-test
+  (let [broker (broker/start {:topic-fn ::topic})
+        ch     (async/chan)]
+    (broker/subscribe broker ::custom-topic-fn ch)
+    (broker/publish! broker {::topic ::custom-topic-fn})
+    (is (= {::topic ::custom-topic-fn} (take!! ch)))))
+
 (deftest error-handler-test
   (let [p        (promise)
         error-fn (fn [e ctx]
