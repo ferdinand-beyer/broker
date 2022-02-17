@@ -4,7 +4,8 @@
             [clojure.core.async.impl.protocols :as async-protocols]))
 
 (defn thread-uncaught-exc-handler
-  "Passes exceptions to the current thread's `UncaughtExceptionHandler`."
+  "Default `:error-fn` for [[start]], passes exceptions to the current
+   thread's `UncaughtExceptionHandler`."
   [e _]
   (let [thread (Thread/currentThread)]
     (-> (.getUncaughtExceptionHandler thread)
@@ -16,12 +17,14 @@
 
    Supported options:
    * `:topic-fn` - function used to determine the topic of an incoming message
-     for [[subscribe]]; default: `:key`.
+     for [[subscribe]].  Defaults to `first`, expecting messages to be vectors
+     `[topic payload...]`.
    * `:xform` - a transducer to transform/filter messages as they are published.
-   * `:buf-or-n` - async buffer or fixed buffer size to use for the publish
-     channel.  Defaults to a `1024`.
-   * `:buf-fn` - function to create async buffers for subscribing functions.
-     By default, uses small fixed-size buffers.
+     Should not throw exceptions and must not produce `nil` messages.
+   * `:buf-or-n` - `core.async` buffer to use for the publish channel.  Defaults
+     to a large fixed-size buffer (`1024`).
+   * `:buf-fn` - function to create `core.async` buffers for subscribing
+     functions.  By default, uses small fixed-size buffers (`8`).
    * `:error-fn` - when a subscribing function throws an exception, this function
      will be called with two arguments: the exception and a map with keys
      `:broker`, `:fn`, and `:msg`.  With no `:error-fn` (default), exceptions are
@@ -44,7 +47,8 @@
 (defn stop!
   "Stops the broker, closing all internal async channels.
    After that, the broker will no longer accept messages.  Any priorly
-   published messages will still be delivered.  Returns `nil`."
+   published messages will still be delivered.  Can be called multiple
+   times.  Returns `nil`."
   [broker]
   (async/close! (::ch broker)))
 
@@ -55,15 +59,15 @@
    Under high load, this will block the caller to respect back-pressure.
    As such, this should not be called from `(go ...)` blocks.
    When blocking is not desired, use `core.async/put!` on the channel
-   returned by [[publish-chan]], or install a dropping or sliding buffer
-   in the broker using the `:buf-or-n` option of [[start]]."
+   returned by [[publish-chan]], or install a windowed buffer using the
+   `:buf-or-n` option of [[start]] to drop messages under high load."
   [broker msg]
   (async/>!! (::ch broker) msg))
 
 (defn publish-chan
   "Returns the channel used for publishing messages to the broker.
 
-   Intended for publishing from a (go ...) block or advanced usage
+   Intended for publishing from a `(go ...)` block or advanced usage
    such as bulk publishing / piping into the broker.
 
    Closing the channel will stop the broker."
@@ -100,7 +104,7 @@
 
 (defn subscribe
   "Subscribes a function or channel to a topic.
-   If `fn-or-ch` is already subscribed to this topic, this is a no-op.
+   If `fn-or-ch` is already subscribed to this topic, this has no effect.
 
    When `fn-or-ch` is a function, it will be run in an async `(go ...)` block
    and should not block.  Exceptions will be reported to the broker's
@@ -114,10 +118,10 @@
 
 (defn subscribe-all
   "Subscribes a function or channel to all messages published to the broker.
-   When `fn-or-ch` is already subscribed to all messages, this is a no-op.
+   If `fn-or-ch` is already subscribed to all messages, this has no effect.
 
    When `fn-or-ch` is also subscribed explicitly to a topic, it will receive
-   messages twice.
+   messages twice for this topic.
 
    When `fn-or-ch` is a function, it will be run in an async `(go ...)` block
    and should not block.  Exceptions will be reported to the broker's
