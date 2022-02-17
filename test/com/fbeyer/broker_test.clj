@@ -137,3 +137,12 @@
       (broker/publish! broker [::topic])
       (is (= ::timeout (take!! ch1)))
       (is (= ::timeout (take!! ch2))))))
+
+(deftest xform-test
+  (let [map->vec (fn [msg] (if (map? msg) [(:topic msg) msg] msg))
+        broker   (broker/start {:xform (map map->vec)})
+        ch       (async/chan)]
+    (broker/subscribe-all broker ch)
+    (broker/publish! broker {:topic ::transformed})
+    (is (= [::transformed {:topic ::transformed}]
+           (take!! ch)))))

@@ -17,6 +17,7 @@
    Supported options:
    * `:topic-fn` - function used to determine the topic of an incoming message
      for [[subscribe]]; default: `:key`.
+   * `:xform` - a transducer to transform/filter messages as they are published.
    * `:buf-or-n` - async buffer or fixed buffer size to use for the publish
      channel.  Defaults to a `1024`.
    * `:buf-fn` - function to create async buffers for subscribing functions.
@@ -27,7 +28,8 @@
      passed to the current thread's `UncaughtExceptionHandler`."
   ([] (start nil))
   ([opts]
-   (let [ch   (async/chan (:buf-or-n opts 1024))
+   (let [ch   (async/chan (:buf-or-n opts 1024)
+                          (:xform opts))
          mult (async/mult ch)]
      {::ch       ch
       ::mult     mult
@@ -48,7 +50,7 @@
 
 (defn publish!
   "Publishes `msg` to subscribers, who will be notified asynchronously.
-   Returns `true` unless `broker` is stopped.
+   `msg` must not be `nil`.  Returns `true` unless `broker` is stopped.
 
    Under high load, this will block the caller to respect back-pressure.
    As such, this should not be called from `(go ...)` blocks.
