@@ -23,40 +23,45 @@ Start a broker and publish a message:
 
 (def broker (broker/start))
 
-(broker/publish! broker {:key :broker-started
-                         :broker broker})
+(broker/publish! broker [:broker-started])
 ```
 
-Messages are partitioned by topic.  The topic of a message is determined by
-a `:topic-fn` which can be passed to `start`.  When no `:topic-fn` is
-configured, messages' topic will be grouped by their `:key` key.
+By default, messages are expected to be vectors, with the first element being
+a keyword to represent the type of message.  This is the same structure as
+used by libraries such as [re-frame] and [sente].
+
+The broker uses the message type as a _topic_, and allows subscribers to select
+which messages they are interested in.  To subscribe to messages,
+use `subscribe` and `subscribe-all`:
 
 ```clojure
-(def broker (broker/start {:topic-fn :key}))
-```
-
-To subscribe to messages, use `subscribe` and `subscribe-all`:
-
-```clojure
-(defn notify-hello [msg]
-  (println "Hello," (:name msg)))
+(defn notify-hello [[_ name]]]
+  (println "Hello," (:name name)))
 
 (broker/subscribe broker :hello notify-hello)
 
-(broker/publish! broker {:key :hello
-                         :name "Broker!"})
+(broker/publish! broker [:hello "Broker!"])
 ; Hello, Broker!
 
 (broker/subscribe-all broker #(println "Observed:" %))
 
-(broker/publish! broker {:key :hello
-                         :name "All!"})
-; Observed: {:key :hello, :name All!}
+(broker/publish! broker [:hello "All!"])
+; Observed: [:hello "All!"]
 ; Hello, All!
 
-(broker/publish! broker {:key :goodbye})
-; Observed: {:key :goodbye}
+(broker/publish! broker [:hi "what's up?"])
+; Observed: [:hi "what's up?"]
 ```
+
+To customize the message format, you can supply a `:topic-fn`:
+
+```clojure
+;; Dispatch on the :msg/topic key instead:
+(def broker (broker/start {:topic-fn :msg/topic}))
+
+(broker/publish! broker {:msg/topic :my.domain/widget-created})
+```
+
 
 Under the hood, `broker` uses [`core.async`][core.async].  Instead of
 functions, you can also subscribe with async channels:
@@ -66,7 +71,7 @@ functions, you can also subscribe with async channels:
 
 (def ch (async/chan))
 
-(broker/subscribe broker :goodbye ch)
+(broker/subscribe broker :hi ch)
 ```
 
 You can stop receiving messages with `unsubscribe` and release all
@@ -74,7 +79,7 @@ subscriptions with `unsubscribe-all`:
 
 ```clojure
 ;; Unsubscribe a channel from a topic:
-(broker/unsubscribe broker :goodbye ch)
+(broker/unsubscribe broker :hi ch)
 
 ;; Unsubscribe a function from all topics:
 (broker/unsubscribe broker notify-hello)
@@ -89,7 +94,7 @@ You can stop the router with `stop!`:
 (broker/stop! broker)
 
 ;; This has no effect:
-(broker/publish! broker {:key :more}) ; => false
+(broker/publish! broker [:more]) ; => false
 ```
 
 ## License
@@ -100,6 +105,8 @@ Copyright &copy; 2022 [Ferdinand Beyer]
 [core.async]: https://github.com/clojure/core.async
 [clojars]: https://clojars.org/com.fbeyer/broker
 [cljdoc]: https://cljdoc.org/jump/release/com.fbeyer/broker
+[re-frame]: https://github.com/day8/re-frame
+[sente]: https://github.com/ptaoussanis/sente
 
 [Ferdinand Beyer]: https://fbeyer.com
 [MIT License]: https://opensource.org/licenses/MIT

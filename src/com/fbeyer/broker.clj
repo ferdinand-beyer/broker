@@ -20,7 +20,7 @@
      {::ch       ch
       ::mult     mult
       ::pub      (-> (async/tap mult (async/chan))
-                     (async/pub (:topic-fn opts :key)))
+                     (async/pub (:topic-fn opts first)))
       ::subs     (atom {})
       ::taps     (atom #{})
       ::fn-chs   (atom {})

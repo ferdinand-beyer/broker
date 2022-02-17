@@ -12,16 +12,16 @@
 (deftest subscribe-all-test
   (testing "subscribing to all messages with a channel"
     (let [broker (broker/start)
-          msg {:key ::subscribe-all-ch}
-          ch (async/chan)]
+          msg    [::subscribe-all-ch]
+          ch     (async/chan)]
       (broker/subscribe-all broker ch)
       (broker/publish! broker msg)
       (is (= msg (take!! ch)))))
 
   (testing "subscribing to all messages with a callback function"
     (let [broker (broker/start)
-          msg {:key ::subscribe-all-fn}
-          p (promise)]
+          msg    [::subscribe-all-fn]
+          p      (promise)]
       (broker/subscribe-all broker (partial deliver p))
       (broker/publish! broker msg)
       (is (= msg (deref p 100 ::timeout))))))
@@ -29,13 +29,13 @@
 (deftest subscribe-test
   (testing "only receive messages from subscribed topic"
     (let [broker (broker/start)
-          ch (async/chan)]
+          ch     (async/chan)]
       (broker/subscribe broker ::wanted ch)
-      (broker/publish! broker {:key ::unwanted-1})
-      (broker/publish! broker {:key ::unwanted-2})
-      (broker/publish! broker {:key ::wanted})
-      (broker/publish! broker {:key ::unwanted-3})
-      (is (= {:key ::wanted} (take!! ch))))))
+      (broker/publish! broker [::unwanted-1])
+      (broker/publish! broker [::unwanted-2])
+      (broker/publish! broker [::wanted])
+      (broker/publish! broker [::unwanted-3])
+      (is (= [::wanted] (take!! ch))))))
 
 (deftest error-handler-test
   (let [p        (promise)
@@ -44,7 +44,7 @@
         broker   (broker/start {:error-fn error-fn})
         exc      (ex-info "error test" {})
         f        (fn [_] (throw exc))
-        msg      {:key ::error-handler-test}]
+        msg      [::error-handler-test]]
     (broker/subscribe-all broker f)
     (broker/publish! broker msg)
     (let [[e ctx] (deref p 100 nil)]
@@ -57,10 +57,10 @@
   (let [broker (broker/start)
         ch (async/chan)]
     (broker/subscribe-all broker ch)
-    (broker/publish! broker {:key ::delivered})
+    (broker/publish! broker [::delivered])
     (broker/stop! broker)
-    (broker/publish! broker {:key ::dropped})
-    (is (= {:key ::delivered} (take!! ch)) "published messages are still delivered")
+    (broker/publish! broker [::dropped])
+    (is (= [::delivered] (take!! ch)) "published messages are still delivered")
     (is (nil? (take!! ch)))
     (is (async-impl/closed? ch) "subscribed channels are closed")))
 
@@ -71,9 +71,9 @@
       (broker/subscribe broker ::spam ch)
       (broker/subscribe broker ::eggs ch)
       (broker/unsubscribe broker ::spam ch)
-      (broker/publish! broker {:key ::spam})
-      (broker/publish! broker {:key ::eggs})
-      (is (= {:key ::eggs} (take!! ch)))
+      (broker/publish! broker [::spam])
+      (broker/publish! broker [::eggs])
+      (is (= [::eggs] (take!! ch)))
       (broker/stop! broker)
       (is (nil? (take!! ch)))))
 
@@ -83,7 +83,7 @@
       (broker/subscribe-all broker ch)
       (broker/subscribe broker ::news ch)
       (broker/unsubscribe broker ch)
-      (broker/publish! broker {:key ::news})
+      (broker/publish! broker [::news])
       (broker/stop! broker)
       (is (= ::timeout (take!! ch)))))
 
@@ -96,10 +96,10 @@
       (broker/subscribe broker ::topic ch2)
       (broker/subscribe-all broker ch3)
       (broker/unsubscribe-all broker ::topic)
-      (broker/publish! broker {:key ::topic})
+      (broker/publish! broker [::topic])
       (is (= ::timeout (take!! ch1)))
       (is (= ::timeout (take!! ch2)))
-      (is (= {:key ::topic} (take!! ch3)) "all-consumers are still subscribed")))
+      (is (= [::topic] (take!! ch3)) "all-consumers are still subscribed")))
 
   (testing "unsubscribe all consumers"
     (let [broker (broker/start)
@@ -108,6 +108,6 @@
       (broker/subscribe broker ::topic ch1)
       (broker/subscribe-all broker ch2)
       (broker/unsubscribe-all broker)
-      (broker/publish! broker {:key ::topic})
+      (broker/publish! broker [::topic])
       (is (= ::timeout (take!! ch1)))
       (is (= ::timeout (take!! ch2))))))
