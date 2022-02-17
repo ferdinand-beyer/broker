@@ -5,7 +5,7 @@
   <artifactId>ARTIFACT</artifactId>
   <version>VERSION</version>
   <name>NAME</name>
-  <description>Automatically load namespaces from the classpath.</description>
+  <description>Simple asynchronous in-process event broker for Clojure.</description>
   <url>https://github.com/ferdinand-beyer/broker</url>
   <licenses>
     <license>
