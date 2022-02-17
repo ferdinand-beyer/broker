@@ -13,25 +13,30 @@
 
 (defn start
   "Starts a broker.
+
    Supported options:
    * `:topic-fn` - function used to determine the topic of an incoming message
      for [[subscribe]]; default: `:key`.
+   * `:buf-or-n` - async buffer or fixed buffer size to use for the publish
+     channel.  Defaults to a `1024`.
+   * `:buf-fn` - function to create async buffers for subscribing functions.
+     By default, uses small fixed-size buffers.
    * `:error-fn` - when a subscribing function throws an exception, this function
      will be called with two arguments: the exception and a map with keys
      `:broker`, `:fn`, and `:msg`.  With no `:error-fn` (default), exceptions are
      passed to the current thread's `UncaughtExceptionHandler`."
   ([] (start nil))
   ([opts]
-   ;; TODO: Buffers for the source channel and pub channels?
-   (let [ch   (async/chan)
+   (let [ch   (async/chan (:buf-or-n opts 1024))
          mult (async/mult ch)]
      {::ch       ch
       ::mult     mult
-      ::pub      (-> (async/tap mult (async/chan))
+      ::pub      (-> (async/tap mult (async/chan)) ; unbuffered - ok?
                      (async/pub (:topic-fn opts first)))
       ::subs     (atom {})
       ::taps     (atom #{})
       ::fn-chs   (atom {})
+      ::buf-fn   (:buf-fn opts (constantly 8))
       ::error-fn (:error-fn opts thread-uncaught-exc-handler)})))
 
 (defn stop!
@@ -43,25 +48,40 @@
 
 (defn publish!
   "Publishes `msg` to subscribers, who will be notified asynchronously.
-   Returns `true` unless `broker` is stopped."
+   Returns `true` unless `broker` is stopped.
+
+   Under high load, this will block the caller to respect back-pressure.
+   As such, this should not be called from `(go ...)` blocks.
+   When blocking is not desired, use `core.async/put!` on the channel
+   returned by [[publish-chan]], or install a dropping or sliding buffer
+   in the broker using the `:buf-or-n` option of [[start]]."
   [broker msg]
-  (async/put! (::ch broker) msg))
+  (async/>!! (::ch broker) msg))
+
+(defn publish-chan
+  "Returns the channel used for publishing messages to the broker.
+
+   Intended for publishing from a (go ...) block or advanced usage
+   such as bulk publishing / piping into the broker.
+
+   Closing the channel will stop the broker."
+  [broker]
+  (::ch broker))
 
 (defn- write-port? [x]
   (satisfies? async-protocols/WritePort x))
 
-(defn- make-fn-chan [broker f]
-  (let [ch (async/chan)] ; TODO: Buffer?
+(defn- make-fn-chan [{::keys [buf-fn error-fn] :as broker} f]
+  (let [ch (async/chan (buf-fn))]
     (async/go-loop []
       (if-let [msg (async/<! ch)]
         (do
           (try
             (f msg)
             (catch Throwable e
-              (when-let [error-fn (::error-fn broker)]
-                (error-fn e {:broker broker
-                             :fn f
-                             :msg msg}))))
+              (error-fn e {:broker broker
+                           :fn f
+                           :msg msg})))
           (recur))
         (async/close! ch)))
     ch))
