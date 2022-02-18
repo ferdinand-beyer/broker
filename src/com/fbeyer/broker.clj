@@ -80,16 +80,14 @@
 (defn- make-fn-chan [{::keys [buf-fn error-fn] :as broker} f]
   (let [ch (async/chan (buf-fn))]
     (async/go-loop []
-      (if-let [msg (async/<! ch)]
-        (do
-          (try
-            (f msg)
-            (catch Throwable e
-              (error-fn e {:broker broker
-                           :fn f
-                           :msg msg})))
-          (recur))
-        (async/close! ch)))
+      (when-let [msg (async/<! ch)]
+        (try
+          (f msg)
+          (catch Throwable e
+            (error-fn e {:broker broker
+                         :fn f
+                         :msg msg})))
+        (recur)))
     ch))
 
 (defn- fn-chan [{::keys [fn-chs] :as broker} f]
