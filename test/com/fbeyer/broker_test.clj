@@ -39,6 +39,13 @@
       (broker/publish! broker [::unwanted-3])
       (is (= [::wanted] (take!! ch))))))
 
+(deftest promise-chan-test
+  (let [broker (broker/start)
+        ch     (async/chan)]
+    (broker/subscribe-all broker ch)
+    (async/put! (broker/publish-chan broker) [::put])
+    (is (= [::put] (take!! ch)))))
+
 (deftest topic-fn-test
   (let [broker (broker/start {:topic-fn ::topic})
         ch     (async/chan)]

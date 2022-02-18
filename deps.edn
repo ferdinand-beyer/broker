@@ -10,7 +10,7 @@
          :extra-deps {lambdaisland/kaocha {:mvn/version "1.0.861"}
                       lambdaisland/kaocha-cloverage {:mvn/version "1.0.75"}}}
 
-  :test/run
+  :kaocha
   {:main-opts ["-m" "kaocha.runner"]}
 
   :build {:deps {io.github.seancorfield/build-clj {:git/tag "v0.6.7" :git/sha "22c2d09"}}
