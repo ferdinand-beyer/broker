@@ -41,6 +41,7 @@
              (do-publish broker topic {:publisher (str topic "-" k)} num-messages))))
        (is (true? (deref done (* timeout-secs 1000) false)))))
     (is (= expected-total @total))
+    (Thread/sleep 100) ; topic subscribers might need a teeny bit longer
     (dotimes [i num-topics]
       (is (= expected-count @(nth topic-counts i))
           (str "received all messages for topic " i)))))
