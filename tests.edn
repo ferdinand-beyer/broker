@@ -5,5 +5,5 @@
              :ns-patterns ["-benchmark$"]}]
   :reporter #profile {:default kaocha.report.progress/progress
                       :ci kaocha.report/documentation}
-  :color? #profile {:default true
-                    :ci false}}
+  :capture-output? #profile {:default true
+                             :ci false}}
