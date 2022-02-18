@@ -44,3 +44,9 @@
     (dotimes [i num-topics]
       (is (= expected-count @(nth topic-counts i))
           (str "received all messages for topic " i)))))
+
+(defn run-benchmark [_opts]
+  (clojure.test/run-tests 'com.fbeyer.broker-benchmark))
+
+(defn -main [& _args]
+  (run-benchmark nil))

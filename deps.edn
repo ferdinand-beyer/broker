@@ -10,8 +10,9 @@
          :extra-deps {lambdaisland/kaocha {:mvn/version "1.0.861"}
                       lambdaisland/kaocha-cloverage {:mvn/version "1.0.75"}}}
 
-  :kaocha
-  {:main-opts ["-m" "kaocha.runner"]}
+  :kaocha {:main-opts ["-m" "kaocha.runner"]}
+
+  :benchmark {:main-opts ["-m" "com.fbeyer.broker-benchmark"]}
 
   :build {:deps {io.github.seancorfield/build-clj {:git/tag "v0.6.7" :git/sha "22c2d09"}}
           :ns-default build}}}

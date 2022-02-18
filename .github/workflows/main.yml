@@ -14,7 +14,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v2
     
-      - name: Prepare java
+      - name: Prepare Java
         uses: actions/setup-java@v2
         with:
           distribution: temurin
@@ -28,7 +28,7 @@ jobs:
       - name: Prepare Classpath
         run: clojure -A:build:test -P
 
-      - name: Build Jar
+      - name: Run Tests and Build Jar
         run: clojure -T:build ci
 
       - name: Deploy Jar

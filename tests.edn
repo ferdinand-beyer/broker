@@ -1,9 +1,4 @@
 #kaocha/v1
  {:plugins [:kaocha.plugin/cloverage]
-  :tests   [{:id :unit}
-            {:id :benchmark
-             :ns-patterns ["-benchmark$"]}]
   :reporter #profile {:default kaocha.report.progress/progress
-                      :ci kaocha.report/documentation}
-  :capture-output? #profile {:default true
-                             :ci false}}
+                      :ci kaocha.report/documentation}}

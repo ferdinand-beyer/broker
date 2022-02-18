@@ -38,6 +38,10 @@
       (assoc :aliases [:kaocha])
       (bb/run-tests)))
 
+(defn benchmark "Run benchmarks." [opts]
+  (-> opts
+      (bb/run-task [:test :benchmark])))
+
 (defn jar "Build the Jar." [opts]
   (-> opts
       (assoc :lib lib :version version)
@@ -47,6 +51,7 @@
 (defn ci "Run the CI pipeline of tests (and build the Jar)." [opts]
   (-> opts
       (test)
+      (benchmark)
       (jar)))
 
 (defn install "Install the JAR locally." [opts]
