@@ -45,8 +45,11 @@
       (is (= expected-count @(nth topic-counts i))
           (str "received all messages for topic " i)))))
 
+(def ^:private -ns *ns*)
+
 (defn run-benchmark [_opts]
-  (clojure.test/run-tests 'com.fbeyer.broker-benchmark))
+  (let [{:keys [fail error]} (clojure.test/run-tests -ns)]
+    (zero? (+ fail error))))
 
 (defn -main [& _args]
-  (run-benchmark nil))
+  (System/exit (if (run-benchmark nil) 0 1)))
