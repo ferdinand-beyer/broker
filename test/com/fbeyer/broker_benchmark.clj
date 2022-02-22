@@ -25,13 +25,16 @@
         topic-counts   (vec (repeatedly num-topics #(atom 0)))
         total          (atom 0)
         done           (promise)
-        broker         (broker/start)]
+        broker         (broker/start)
+        opts           {:blocking? false}]
     (add-watch total ::done (fn [_ _ _ n]
                               (when (= n expected-total)
                                 (deliver done true))))
-    (broker/subscribe-all broker (make-counter total))
+    (broker/subscribe broker (make-counter total) opts)
     (dotimes [i num-topics]
-      (broker/subscribe broker (str "topic-" i) (make-counter (nth topic-counts i))))
+      (broker/subscribe broker (str "topic-" i)
+                        (make-counter (nth topic-counts i))
+                        opts))
     (prn  (str "Publishing " expected-total " messages..."))
     (time
      (do

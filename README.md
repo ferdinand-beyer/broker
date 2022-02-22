@@ -32,7 +32,7 @@ used by libraries such as [re-frame] and [sente].
 
 The broker uses the message type as a _topic_, and allows subscribers to select
 which messages they are interested in.  To subscribe to messages,
-use `subscribe` and `subscribe-all`:
+use `subscribe`:
 
 ```clojure
 (defn notify-hello [[_ name]]]
@@ -43,7 +43,7 @@ use `subscribe` and `subscribe-all`:
 (broker/publish! broker [:hello "Broker!"])
 ; Hello, Broker!
 
-(broker/subscribe-all broker #(println "Observed:" %))
+(broker/subscribe broker #(println "Observed:" %))
 
 (broker/publish! broker [:hello "All!"])
 ; Observed: [:hello "All!"]

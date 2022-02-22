@@ -11,12 +11,12 @@
     ch ([msg] msg)
     (async/timeout timeout-ms) ::timeout))
 
-(deftest subscribe-all-test
+(deftest subscribe-test
   (testing "subscribing to all messages with a callback function"
     (let [broker (broker/start)
           msg    [::subscribe-all-fn]
           p      (promise)]
-      (broker/subscribe-all broker (partial deliver p))
+      (broker/subscribe broker (partial deliver p))
       (broker/publish! broker msg)
       (is (= msg (deref p timeout-ms ::timeout)))))
 
@@ -24,11 +24,10 @@
     (let [broker (broker/start)
           msg    [::subscribe-all-ch]
           ch     (async/chan)]
-      (broker/subscribe-all broker ch)
+      (broker/subscribe broker ch)
       (broker/publish! broker msg)
-      (is (= msg (take!! ch))))))
+      (is (= msg (take!! ch)))))
 
-(deftest subscribe-test
   (testing "only receive messages from subscribed topic"
     (let [broker (broker/start)
           p      (promise)]
@@ -42,7 +41,7 @@
 (deftest publish-chan-test
   (let [broker (broker/start)
         p      (promise)]
-    (broker/subscribe-all broker (partial deliver p))
+    (broker/subscribe broker (partial deliver p))
     (async/put! (broker/publish-chan broker) [::put])
     (is (= [::put] (deref p timeout-ms ::timeout)))))
 
@@ -78,7 +77,7 @@
         exc      (ex-info "error test" {})
         f        (fn [_] (throw exc))
         msg      [::error-handler-test]]
-    (broker/subscribe-all broker f)
+    (broker/subscribe broker f)
     (broker/publish! broker msg)
     (let [[e ctx] (deref p timeout-ms nil)]
       (is (= exc e))
@@ -89,7 +88,7 @@
 (deftest stop!-test
   (let [broker (broker/start)
         ch     (async/chan)]
-    (broker/subscribe-all broker ch)
+    (broker/subscribe broker ch)
     (broker/publish! broker [::delivered])
     (broker/stop! broker)
     (broker/publish! broker [::dropped])
@@ -101,8 +100,7 @@
   (testing "unsubscribe from a topic"
     (let [broker (broker/start)
           ch     (async/chan 2)]
-      (broker/subscribe broker ::spam ch)
-      (broker/subscribe broker ::eggs ch)
+      (broker/subscribe broker [::spam ::eggs] ch)
       (broker/unsubscribe broker ::spam ch)
       (broker/publish! broker [::spam])
       (broker/publish! broker [::eggs])
@@ -113,8 +111,7 @@
   (testing "unsubscribe from all topics"
     (let [broker (broker/start)
           ch     (async/chan 1)]
-      (broker/subscribe-all broker ch)
-      (broker/subscribe broker ::news ch)
+      (broker/subscribe broker [::news ::olds] ch)
       (broker/unsubscribe broker ch)
       (broker/publish! broker [::news])
       (broker/stop! broker)
@@ -127,7 +124,7 @@
           ch3    (async/chan 1)]
       (broker/subscribe broker ::topic ch1)
       (broker/subscribe broker ::topic ch2)
-      (broker/subscribe-all broker ch3)
+      (broker/subscribe broker ch3)
       (broker/unsubscribe-all broker ::topic)
       (broker/publish! broker [::topic])
       (is (= ::timeout (take!! ch1)))
@@ -139,7 +136,7 @@
           ch1    (async/chan 1)
           ch2    (async/chan 1)]
       (broker/subscribe broker ::topic ch1)
-      (broker/subscribe-all broker ch2)
+      (broker/subscribe broker ch2)
       (broker/unsubscribe-all broker)
       (broker/publish! broker [::topic])
       (is (= ::timeout (take!! ch1)))
@@ -149,7 +146,7 @@
   (let [map->vec (fn [msg] (if (map? msg) [(:topic msg) msg] msg))
         broker   (broker/start {:xform (map map->vec)})
         p        (promise)]
-    (broker/subscribe-all broker (partial deliver p))
+    (broker/subscribe broker (partial deliver p))
     (broker/publish! broker {:topic ::transformed})
     (is (= [::transformed {:topic ::transformed}]
            (deref p timeout-ms ::timeout)))))
