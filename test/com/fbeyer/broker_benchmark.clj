@@ -24,27 +24,21 @@
         expected-total (* num-topics expected-count)
         topic-counts   (vec (repeatedly num-topics #(atom 0)))
         total          (atom 0)
-        done           (promise)
         broker         (broker/start)
         opts           {:blocking? false}]
-    (add-watch total ::done (fn [_ _ _ n]
-                              (when (= n expected-total)
-                                (deliver done true))))
     (broker/subscribe broker (make-counter total) opts)
     (dotimes [i num-topics]
       (broker/subscribe broker (str "topic-" i)
                         (make-counter (nth topic-counts i))
                         opts))
-    (prn  (str "Publishing " expected-total " messages..."))
+    (prn (str "Publishing " expected-total " messages..."))
     (time
-     (do
-       (dotimes [i num-topics]
-         (let [topic (str "topic-" i)]
-           (dotimes [k num-publishers]
-             (do-publish broker topic {:publisher (str topic "-" k)} num-messages))))
-       (is (true? (deref done (* timeout-secs 1000) false)))))
+     (let [chs (for [i (range num-topics) :let [topic (str "topic-" i)]
+                     k (range num-publishers)]
+                 (do-publish broker topic {:publisher (str topic "-" k)} num-messages))]
+       (async/<!! (async/merge chs))
+       (is (true? (broker/shutdown! broker (* timeout-secs 1000))))))
     (is (= expected-total @total))
-    (Thread/sleep 100) ; topic subscribers might need a teeny bit longer
     (dotimes [i num-topics]
       (is (= expected-count @(nth topic-counts i))
           (str "received all messages for topic " i)))))

@@ -42,6 +42,7 @@
          mult   (async/mult source)]
      {::source   source
       ::sink     (async/chan (async/sliding-buffer 1) drop-all)
+      ::stop     (async/chan)
       ::mult     mult
       ::pub      (-> (async/tap mult (async/chan)) ; unbuffered - ok?
                      (async/pub (:topic-fn opts first)))
@@ -49,13 +50,39 @@
       ::buf-fn   (:buf-fn opts (constantly 8))
       ::error-fn (:error-fn opts thread-uncaught-exc-handler)})))
 
+(defn- pipeline-channels [{::keys [subs]}]
+  (->> @subs vals (keep #(nth % 2))))
+
+(defn stop-chan
+  "Returns a channel that will close when the broker stops and all
+   pending messages are processed by the subscribers.  Can be used
+   to block for a graceful shutdown."
+  [broker]
+  (async/go
+    (async/<! (::stop broker))
+    (let [ch (async/merge (pipeline-channels broker))]
+      (loop []
+        (when (async/<! ch)
+          (recur))))))
+
 (defn stop!
   "Stops the broker, closing all internal async channels.
    After that, the broker will no longer accept messages.  Any priorly
    published messages will still be delivered.  Can be called multiple
    times.  Returns `nil`."
   [broker]
-  (async/close! (::source broker)))
+  (async/close! (::source broker))
+  (async/close! (::stop broker)))
+
+(defn shutdown!
+  "Stops the broker and waits for all messages to be processed, or `timeout-ms`
+   to pass.  Returns `true` when successfully stopped, or `false` on timeout."
+  ([broker] (shutdown! broker 60000))
+  ([broker timeout-ms]
+   (stop! broker)
+   (async/alt!!
+     (stop-chan broker) true
+     (async/timeout timeout-ms) false)))
 
 (defn publish!
   "Publishes `msg` to subscribers, who will be notified asynchronously.
@@ -75,7 +102,7 @@
    Intended for publishing from a `(go ...)` block or advanced usage
    such as bulk publishing / piping into the broker.
 
-   Closing the channel will stop the broker."
+   The caller must not close the returned channel."
   [broker]
   (::source broker))
 
