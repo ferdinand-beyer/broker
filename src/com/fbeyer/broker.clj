@@ -12,6 +12,12 @@
         (.uncaughtException thread e)))
   nil)
 
+(defn- drop-all [rf]
+  (fn
+    ([] (rf))
+    ([result] (rf result))
+    ([result _] result)))
+
 (defn start
   "Starts a broker.
 
@@ -31,10 +37,11 @@
      passed to the current thread's `UncaughtExceptionHandler`."
   ([] (start nil))
   ([opts]
-   (let [ch   (async/chan (:buf-or-n opts 1024)
-                          (:xform opts))
-         mult (async/mult ch)]
-     {::ch       ch
+   (let [source (async/chan (:buf-or-n opts 1024)
+                            (:xform opts))
+         mult   (async/mult source)]
+     {::source   source
+      ::sink     (async/chan (async/sliding-buffer 1) drop-all)
       ::mult     mult
       ::pub      (-> (async/tap mult (async/chan)) ; unbuffered - ok?
                      (async/pub (:topic-fn opts first)))
@@ -50,7 +57,7 @@
    published messages will still be delivered.  Can be called multiple
    times.  Returns `nil`."
   [broker]
-  (async/close! (::ch broker)))
+  (async/close! (::source broker)))
 
 (defn publish!
   "Publishes `msg` to subscribers, who will be notified asynchronously.
@@ -62,7 +69,7 @@
    returned by [[publish-chan]], or install a windowed buffer using the
    `:buf-or-n` option of [[start]] to drop messages under high load."
   [broker msg]
-  (async/>!! (::ch broker) msg))
+  (async/>!! (::source broker) msg))
 
 (defn publish-chan
   "Returns the channel used for publishing messages to the broker.
@@ -72,21 +79,29 @@
 
    Closing the channel will stop the broker."
   [broker]
-  (::ch broker))
+  (::source broker))
 
 (defn- write-port? [x]
   (satisfies? async-protocols/WritePort x))
 
-(defn- make-fn-chan [{::keys [buf-fn error-fn] :as broker} f]
-  (let [ch (async/chan (buf-fn))]
+(defn- wrap-errors [{::keys [error-fn] :as broker} f]
+  (fn [msg]
+    (try
+      (f msg)
+      (catch Throwable e
+        (error-fn e {:broker broker
+                     :fn f
+                     :msg msg})))))
+
+(defn- make-fn-chan [{::keys [sink buf-fn] :as broker} f]
+  (let [ch (async/chan (buf-fn))
+        f* (wrap-errors broker f)]
+    ;; TODO: Register returned channel
+    ;(async/pipeline-async 1 sink (fn [msg out] (async/thread (f* msg) (async/close! out))) ch false)
     (async/go-loop []
       (when-let [msg (async/<! ch)]
-        (try
-          (f msg)
-          (catch Throwable e
-            (error-fn e {:broker broker
-                         :fn f
-                         :msg msg})))
+        (f* msg)
+        ;(async/<! (async/thread (f* msg)))
         (recur)))
     ch))
 
