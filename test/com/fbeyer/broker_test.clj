@@ -53,22 +53,22 @@
     (is (= {::topic ::custom-topic-fn} (deref p timeout-ms ::timeout)))))
 
 (deftest default-error-fn-test
-  (let [error-fn @#'broker/thread-uncaught-exc-handler
-        thread   (Thread/currentThread)
+  (let [thread   (Thread/currentThread)
         orig     (.getUncaughtExceptionHandler thread)
         p        (promise)
         handler  (reify Thread$UncaughtExceptionHandler
                    (uncaughtException [_ _ e] (deliver p e)))
         broker   (broker/start)
+        error-fn (::broker/error-fn broker)
         exc      (ex-info "error test" {})]
-    (is (= error-fn (::broker/error-fn broker)))
     (try
       (.setUncaughtExceptionHandler thread handler)
       (error-fn exc nil)
       (finally
         (.setUncaughtExceptionHandler thread orig)))
     (let [e (deref p timeout-ms ::timeout)]
-      (is (= exc e)))))
+      (is (identical? exc e)
+          "passes exception to thread's uncaught exception handler"))))
 
 (deftest error-handler-test
   (let [p        (promise)
