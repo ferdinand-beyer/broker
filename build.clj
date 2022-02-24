@@ -35,7 +35,7 @@
 
 (defn test "Run the tests." [opts]
   (-> opts
-      (assoc :aliases [:kaocha])
+      (assoc :aliases [:test/run])
       (bb/run-tests)))
 
 (defn benchmark "Run benchmarks." [opts]

@@ -10,7 +10,9 @@
          :extra-deps {lambdaisland/kaocha {:mvn/version "1.0.861"}
                       lambdaisland/kaocha-cloverage {:mvn/version "1.0.75"}}}
 
-  :kaocha {:main-opts ["-m" "kaocha.runner"]}
+  :test/run {:main-opts ["-m" "kaocha.runner"]}
+
+  :test/watch {:main-opts ["-m" "kaocha.runner" "--watch"]}
 
   :benchmark {:main-opts ["-m" "com.fbeyer.broker-benchmark"]}
 
