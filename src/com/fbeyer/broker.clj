@@ -12,12 +12,6 @@
         (.uncaughtException thread e)))
   nil)
 
-(defn- drop-all [rf]
-  (fn
-    ([] (rf))
-    ([result] (rf result))
-    ([result _] result)))
-
 (defn start
   "Starts a broker.
 
@@ -41,7 +35,6 @@
                             (:xform opts))
          mult   (async/mult source)]
      {::source   source
-      ::sink     (async/chan (async/sliding-buffer 1) drop-all)
       ::stop     (async/chan)
       ::mult     mult
       ::pub      (-> (async/tap mult (async/chan)) ; unbuffered - ok?
@@ -114,6 +107,7 @@
     (throw (ex-info "subscription key already exists in broker" {:key k}))
     k))
 
+;; TODO: Support xform and ex-handler; or maybe just allow to pass in a channel?
 (defn- subscriber-channel [{::keys [buf-fn]} {:keys [buf-or-n]}]
   (async/chan (or buf-or-n (buf-fn))))
 
@@ -126,18 +120,29 @@
                      :fn f
                      :msg msg})))))
 
+(defn- drop-all [rf]
+  (fn
+    ([] (rf))
+    ([result] (rf result))
+    ([result _] result)))
+
+(defn- null-chan []
+  (async/chan (async/sliding-buffer 1) drop-all))
+
+;; TODO: Since we don't have a 'to' channel, this is actually not a pipeline?
+;; Maybe a "process"?
 (defn- pipeline
-  [{::keys [sink] :as broker} ch f {:keys [blocking? parallel]
-                                    :or {blocking? true}}]
+  [broker ch f {:keys [blocking? parallel]
+                :or {blocking? true}}]
   (let [f (wrap-function broker f)]
     (if (some? parallel)
       (if blocking?
-        (async/pipeline-blocking parallel sink (keep f) ch false)
-        (async/pipeline-async parallel sink
+        (async/pipeline-blocking parallel (null-chan) (keep f) ch)
+        (async/pipeline-async parallel (null-chan)
                               (fn [msg out]
                                 (f msg)
                                 (async/close! out))
-                              ch false))
+                              ch))
       (if blocking?
         (async/go-loop [cs [ch]]
           (when (seq cs)
@@ -145,10 +150,18 @@
               (if (and (= c ch) (some? v))
                 (recur (conj cs (async/thread (f v))))
                 (recur (filterv #(not= % c) cs))))))
+        ;; This is actually sequential ("parallel 1")
         (async/go-loop []
           (when-let [msg (async/<! ch)]
             (f msg)
             (recur)))))))
+
+;; TODO: Improve subscription types:
+;; :go - run in a go block
+;; :compute - run a computation intensive task in a background thread
+;; :blocking - block (e.g. for I/O) in a dedicated thread
+;; :async - take [msg done] and call (done) when async task is completed
+;; :??? - Use a bounded thread pool shared by all subscriptions
 
 (defn subscribe
   "Subscribes to messages from the broker.
@@ -157,8 +170,9 @@
    `topic` can also be a sequence of multiple topics to subscribe to.
    Without `topic`, subscribes to all messages.
 
-   If `f` is a channel, it is the caller's responsibility to block
-   a non-daemon thread to ensure the message is consumed.
+   If `f` is a channel, it is the caller's responsibility to read messages
+   asynchronously, and making sure that the JVM process waits for the consumer
+   process to finish.
 
    Options:
    * `:key` - key to unsubscribe (default: `f`)
@@ -177,6 +191,7 @@
      (subscribe broker topic-or-f f-or-opts nil)))
   ([broker topic f opts]
    (let [{::keys [mult pub subs]} broker
+         ;; TODO: Just add subscriptions, don't bother with keys?
          k  (ensure-unique-key @subs (:key opts f)) ; can we relax that?
          ch (if (write-port? f) f (subscriber-channel broker opts))
          p  (when-not (write-port? f) (pipeline broker ch f opts))]
@@ -184,6 +199,8 @@
        (let [ts (if (sequential? topic) (set topic) #{topic})]
          (doseq [topic ts]
            (async/sub pub topic ch))
+         ;; TODO: Use maps for subscriptions!
+         ;; input-ch, process-ch, topics, opts
          (swap! subs assoc k [ch ts p]))
        (do (async/tap mult ch)
            (swap! subs assoc k [ch nil p])))
@@ -208,20 +225,20 @@
    unsubscribes from all topics, i.e. clears all subscriptions from
    [[subscribe]].
 
-   If `k` is not a subscriber, this is a no-op.  Returns `nil`."
-  ([broker k]
+   If `f` is not a subscriber, this is a no-op.  Returns `nil`."
+  ([broker f]
    (let [{::keys [mult pub subs]} broker]
-     (when-let [[ch topics p] (get @subs k)]
+     (when-let [[ch topics p] (get @subs f)]
        (if topics
          (doseq [topic topics]
            (async/unsub pub topic ch))
          (async/untap mult ch))
-       (remove-sub broker k ch p)
+       (remove-sub broker f ch p)
        nil)))
-  ([broker topic k]
+  ([broker topic f]
    (let [{::keys [subs]} broker]
-     (when-let [s (get @subs k)]
-       (unsub broker topic k s)
+     (when-let [s (get @subs f)]
+       (unsub broker topic f s)
        nil))))
 
 (defn unsubscribe-all
