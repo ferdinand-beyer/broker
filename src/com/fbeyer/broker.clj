@@ -248,9 +248,11 @@
   ([broker]
    (let [{::keys [mult pub subs]} broker]
      (async/unsub-all pub)
-     (doseq [[_ [ch topics _]] @subs]
+     (doseq [[_ [ch topics p]] @subs]
        (when (nil? topics)
-         (async/untap mult ch)))
+         (async/untap mult ch))
+       (when p
+         (async/close! ch)))
      (reset! subs {})
      nil))
   ([broker topic]
