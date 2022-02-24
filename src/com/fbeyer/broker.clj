@@ -3,9 +3,7 @@
   (:require [clojure.core.async :as async]
             [clojure.core.async.impl.protocols :as async-protocols]))
 
-(defn thread-uncaught-exc-handler
-  "Default `:error-fn` for [[start]], passes exceptions to the current
-   thread's `UncaughtExceptionHandler`."
+(defn- thread-uncaught-exc-handler
   [e _]
   (let [thread (Thread/currentThread)]
     (-> (.getUncaughtExceptionHandler thread)
@@ -108,8 +106,8 @@
     k))
 
 ;; TODO: Support xform and ex-handler; or maybe just allow to pass in a channel?
-(defn- subscriber-channel [{::keys [buf-fn]} {:keys [buf-or-n]}]
-  (async/chan (or buf-or-n (buf-fn))))
+(defn- subscriber-channel [{::keys [buf-fn]} _opts]
+  (async/chan (buf-fn)))
 
 (defn- wrap-function [{::keys [error-fn] :as broker} f]
   (fn [msg]
@@ -177,9 +175,7 @@
    Options:
    * `:key` - key to unsubscribe (default: `f`)
    * `:blocking?` - whether `f` might block (default: `true`)
-   * `:parallel` - how many parallel calls to allow (default: `nil` - unbounded)
-   * `:buf-or-n` - buffer for this subscription.  Defaults to the `buf-fn`
-      passed to [[start]]."
+   * `:parallel` - how many parallel calls to allow (default: `nil` - unbounded)"
   {:arglists '([broker f]
                [broker f opts]
                [broker topic f]
