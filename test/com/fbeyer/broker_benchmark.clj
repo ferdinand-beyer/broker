@@ -24,8 +24,8 @@
         expected-total (* num-topics expected-count)
         topic-counts   (vec (repeatedly num-topics #(atom 0)))
         total          (atom 0)
-        broker         (broker/start)
-        opts           {:blocking? false}]
+        broker         (broker/start {:exec :go})
+        opts           nil]
     (broker/subscribe broker (make-counter total) opts)
     (dotimes [i num-topics]
       (broker/subscribe broker (str "topic-" i)
