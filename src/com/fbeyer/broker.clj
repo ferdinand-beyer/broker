@@ -1,7 +1,76 @@
 (ns com.fbeyer.broker
   "A simple in-process message/event broker for Clojure."
   (:require [clojure.core.async :as async]
-            [clojure.core.async.impl.protocols :as async-protocols]))
+            [clojure.core.async.impl.protocols :as async-protocols]
+            [clojure.set :as set]))
+
+(def ^:private empty-subdb
+  {:next-id 0
+   :id      {}
+   :target  {}
+   :topic   {}})
+
+(def ^:private set-conj (fnil conj #{}))
+
+(defn- set-assoc [m k v]
+  (update m k set-conj v))
+
+(defn- set-dissoc [m k v]
+  (let [s (disj (get m k) v)]
+    (if (seq s)
+      (assoc m k s)
+      (dissoc m k))))
+
+(defn- update-topics [subdb topics f & args]
+  (update subdb :topic (fn [tmap]
+                         (reduce (fn [m k] (apply f m k args))
+                                 tmap topics))))
+
+(defn- add-sub [subdb {:keys [target topics] :as sub}]
+  (let [id (:next-id subdb)]
+    (-> subdb
+        (update :next-id inc)
+        (assoc-in [:id id] (assoc sub :id id))
+        (update-in [:target target] set-conj id)
+        (update-topics topics set-assoc id))))
+
+(defn- add-sub-topics [subdb id topics]
+  (-> subdb
+      (update-in [:id id :topics] set/union topics)
+      (update-topics topics set-assoc id)))
+
+(defn- remove-sub [subdb id]
+  (let [{:keys [target topics]} (get-in subdb [:id id])]
+    (-> subdb
+        (update :id dissoc id)
+        (update :target set-dissoc target id)
+        (update-topics topics set-dissoc id))))
+
+(defn- remove-sub-topics [subdb id topics]
+  (-> subdb
+      (update-in [:id id :topics] set/difference topics)
+      (update-topics topics set-dissoc id)))
+
+(defn- all-subs [subdb]
+  (-> subdb :id vals))
+
+(defn- target-subs [subdb target]
+  (->> (get-in subdb [:target target])
+       (map #(get-in subdb [:id %]))))
+
+(defn- target-topics [subdb target]
+  (->> (target-subs subdb target)
+       (mapcat :topics)
+       (into #{})))
+
+(defn- topic-subs [subdb topic]
+  (->> (get-in subdb [:topic topic])
+       (map #(get-in subdb [:id %]))))
+
+(defn- find-compatible [subdb target opts]
+  (->> (target-subs subdb target)
+       (filter #(= opts (:opts %)))
+       first))
 
 (defn- thread-uncaught-exc-handler
   [e _]
@@ -37,12 +106,12 @@
       ::mult     mult
       ::pub      (-> (async/tap mult (async/chan)) ; unbuffered - ok?
                      (async/pub (:topic-fn opts first)))
-      ::subs     (atom {})
+      ::subdb    (atom empty-subdb)
       ::buf-fn   (:buf-fn opts (constantly 8))
       ::error-fn (:error-fn opts thread-uncaught-exc-handler)})))
 
-(defn- pipeline-channels [{::keys [subs]}]
-  (->> @subs vals (keep #(nth % 2))))
+(defn- process-chans [{::keys [subdb]}]
+  (keep :pch (all-subs @subdb)))
 
 (defn stop-chan
   "Returns a channel that will close when the broker stops and all
@@ -51,7 +120,7 @@
   [broker]
   (async/go
     (async/<! (::stop broker))
-    (let [ch (async/merge (pipeline-channels broker))]
+    (let [ch (async/merge (process-chans broker))]
       (loop []
         (when (async/<! ch)
           (recur))))))
@@ -97,18 +166,6 @@
   [broker]
   (::source broker))
 
-(defn- write-port? [x]
-  (satisfies? async-protocols/WritePort x))
-
-(defn- ensure-unique-key [subs k]
-  (if (contains? subs k)
-    (throw (ex-info "subscription key already exists in broker" {:key k}))
-    k))
-
-;; TODO: Support xform and ex-handler; or maybe just allow to pass in a channel?
-(defn- subscriber-channel [{::keys [buf-fn]} _opts]
-  (async/chan (buf-fn)))
-
 (defn- wrap-function [{::keys [error-fn] :as broker} f]
   (fn [msg]
     (try
@@ -129,6 +186,7 @@
 
 ;; TODO: Since we don't have a 'to' channel, this is actually not a pipeline?
 ;; Maybe a "process"?
+;; TODO: Make this a multimethod by type?
 (defn- pipeline
   [broker ch f {:keys [blocking? parallel]
                 :or {blocking? true}}]
@@ -161,6 +219,66 @@
 ;; :async - take [msg done] and call (done) when async task is completed
 ;; :??? - Use a bounded thread pool shared by all subscriptions
 
+(defn- write-port? [x]
+  (satisfies? async-protocols/WritePort x))
+
+;; TODO: Support xform and ex-handler; or maybe just allow to pass in a channel?
+(defn- sub-chan [{::keys [buf-fn]} _opts]
+  (async/chan (buf-fn)))
+
+(defn- make-sub [broker topics f opts]
+  (let [sub {:topics topics
+             :target f
+             :opts   opts}]
+    (if (write-port? f)
+      (do (assert (nil? opts))
+          (assoc sub :ch f))
+      (let [ch  (sub-chan broker opts)
+            pch (pipeline broker ch f opts)]
+        (assoc sub :ch ch :pch pch)))))
+
+(defn- sub-ch [{::keys [mult pub]} topics ch]
+  (doseq [topic topics]
+    (if (= ::all topic)
+      (async/tap mult ch)
+      (async/sub pub topic ch))))
+
+(defn- unsub-ch [{::keys [mult pub]} topics ch]
+  (doseq [topic topics]
+    (if (= ::all topic)
+      (async/untap mult ch)
+      (async/unsub pub topic ch))))
+
+(defn- close-sub! [{:keys [ch pch]}]
+  (when pch
+    (async/close! ch)))
+
+(defn- delete-sub!
+  [{::keys [subdb] :as broker} {:keys [id topics ch] :as sub}]
+  (unsub-ch broker topics ch)
+  (close-sub! sub)
+  (swap! subdb remove-sub id))
+
+(defn- unsub-topics
+  [{::keys [subdb] :as broker} {:keys [id ch] :as sub} topics]
+  (let [sub-topics   (:topics sub)
+        unsub-topics (set/intersection sub-topics topics)]
+    (if (= unsub-topics sub-topics)
+      (delete-sub! broker sub)
+      (do (unsub-ch broker unsub-topics ch)
+          (swap! subdb remove-sub-topics id unsub-topics)))))
+
+(defn- unsub-target-topics
+  [{::keys [subdb] :as broker} topics f]
+  (doseq [sub (target-subs @subdb f)]
+    (unsub-topics broker sub topics)))
+
+(defn- topics->set [topics]
+  (cond
+    (nil? topics)        #{::all}
+    (sequential? topics) (set topics)
+    :else                #{topics}))
+
 (defn subscribe
   "Subscribes to messages from the broker.
 
@@ -173,7 +291,6 @@
    process to finish.
 
    Options:
-   * `:key` - key to unsubscribe (default: `f`)
    * `:blocking?` - whether `f` might block (default: `true`)
    * `:parallel` - how many parallel calls to allow (default: `nil` - unbounded)"
   {:arglists '([broker f]
@@ -186,34 +303,19 @@
      (subscribe broker nil topic-or-f f-or-opts)
      (subscribe broker topic-or-f f-or-opts nil)))
   ([broker topic f opts]
-   (let [{::keys [mult pub subs]} broker
-         ;; TODO: Just add subscriptions, don't bother with keys?
-         k  (ensure-unique-key @subs (:key opts f)) ; can we relax that?
-         ch (if (write-port? f) f (subscriber-channel broker opts))
-         p  (when-not (write-port? f) (pipeline broker ch f opts))]
-     (if (some? topic)
-       (let [ts (if (sequential? topic) (set topic) #{topic})]
-         (doseq [topic ts]
-           (async/sub pub topic ch))
-         ;; TODO: Use maps for subscriptions!
-         ;; input-ch, process-ch, topics, opts
-         (swap! subs assoc k [ch ts p]))
-       (do (async/tap mult ch)
-           (swap! subs assoc k [ch nil p])))
-     nil)))
-
-(defn- remove-sub [{::keys [subs]} k ch p]
-  (when p
-    (async/close! ch))
-  (swap! subs dissoc k))
-
-(defn- unsub [{::keys [pub subs] :as broker} topic k [ch topics p]]
-  (when (contains? topics topic)
-    (let [ts (disj topics topic)]
-      (async/unsub pub topic ch)
-      (if (seq ts)
-        (swap! subs assoc k [ch topics p])
-        (remove-sub broker k ch p)))))
+   (let [topics (topics->set topic)
+         subdb  (::subdb broker)]
+     (if-let [{:keys [id ch] :as sub} (find-compatible @subdb f opts)]
+       (let [new-topics (set/difference topics (:topic sub))]
+         (when (seq new-topics)
+           (unsub-target-topics broker new-topics f)
+           (swap! subdb add-sub-topics id new-topics)
+           (sub-ch broker new-topics ch)))
+       (let [{:keys [ch] :as sub} (make-sub broker topics f opts)]
+         (unsub-target-topics broker topics f)
+         (swap! subdb add-sub sub)
+         (sub-ch broker topics ch))))
+   nil))
 
 (defn unsubscribe
   "Unsubscribes a function or channel.
@@ -223,36 +325,28 @@
 
    If `f` is not a subscriber, this is a no-op.  Returns `nil`."
   ([broker f]
-   (let [{::keys [mult pub subs]} broker]
-     (when-let [[ch topics p] (get @subs f)]
-       (if topics
-         (doseq [topic topics]
-           (async/unsub pub topic ch))
-         (async/untap mult ch))
-       (remove-sub broker f ch p)
-       nil)))
+   (let [subdb  (::subdb broker)
+         topics (target-topics @subdb f)]
+     (unsub-target-topics broker topics f)))
   ([broker topic f]
-   (let [{::keys [subs]} broker]
-     (when-let [s (get @subs f)]
-       (unsub broker topic f s)
-       nil))))
+   (unsub-target-topics broker (topics->set topic) f)))
 
 (defn unsubscribe-all
   "Unsubscribes all subscribers.
    When a `topic` is given, only subscribers to the given topic will be
    unsubscribed.  Returns `nil`."
   ([broker]
-   (let [{::keys [mult pub subs]} broker]
+   (let [{::keys [mult pub subdb]} broker]
      (async/unsub-all pub)
-     (doseq [[_ [ch topics p]] @subs]
-       (when (nil? topics)
+     (doseq [{:keys [ch topics] :as sub} (all-subs @subdb)]
+       (when (contains? topics ::all)
          (async/untap mult ch))
-       (when p
-         (async/close! ch)))
-     (reset! subs {})
+       (close-sub! sub))
+     (reset! subdb empty-subdb)
      nil))
   ([broker topic]
-   (let [{::keys [subs]} broker]
-     (doseq [[k s] @subs]
-       (unsub broker topic k s))
-     nil)))
+   (let [subdb  (::subdb broker)
+         topics (topics->set topic)]
+     (doseq [topic topics
+             sub   (topic-subs @subdb topic)]
+       (unsub-topics broker sub topics)))))

@@ -36,7 +36,30 @@
       (broker/publish! broker [::unwanted-2])
       (broker/publish! broker [::wanted])
       (broker/publish! broker [::unwanted-3])
-      (is (= [::wanted] (deref p timeout-ms ::timeout))))))
+      (is (= [::wanted] (deref p timeout-ms ::timeout)))))
+
+  (testing "subscribing to multiple topics"
+    (let [broker (broker/start)
+          msgs   (atom [])]
+      (broker/subscribe broker [::topic1 ::topic2] (partial swap! msgs conj))
+      (broker/publish! broker [::topic1 "first"])
+      (broker/publish! broker [::topic2 "second"])
+      (broker/publish! broker [::topic3 "third"])
+      (broker/publish! broker [::topic1 "fourth"])
+      (broker/shutdown! broker)
+      (is (= [[::topic1 "first"] [::topic2 "second"] [::topic1 "fourth"]]
+             @msgs))))
+
+  (testing "updating to additional topics"
+    (let [broker (broker/start)
+          msgs   (atom [])
+          f      (partial swap! msgs conj)]
+      (broker/subscribe broker ::a f)
+      (broker/subscribe broker ::b f)
+      (broker/publish! broker [::a])
+      (broker/publish! broker [::b])
+      (broker/shutdown! broker)
+      (is (= [[::a] [::b]] @msgs)))))
 
 (deftest publish-chan-test
   (let [broker (broker/start)
