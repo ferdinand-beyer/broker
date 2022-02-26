@@ -374,3 +374,31 @@
      (doseq [topic topics
              sub   (topic-subs @subdb topic)]
        (unsub-topics broker sub topics)))))
+
+(comment
+  ;; TODO: Reproducing example:
+  (dotimes [n 100]
+    (let [start  (async/chan)
+          pub    (async/pub start first)
+          end    (async/chan)
+          _      (async/sub pub :a end)
+          _      (async/sub pub :b end)
+          recv   (atom #{})
+          done   (async/go-loop []
+                   (when-let [v (async/<! end)]
+                     (swap! recv conj v)
+                     (recur)))
+          sent   [[:a 1] [:a 2] [:b 3]]]
+      (doseq [v sent]
+        (async/>!! start v))
+      (async/close! start)
+      (async/<!! done)
+      (let [exp (set sent)
+            act (set @recv)]
+        (when (not= exp act)
+          (println "No." n)
+          (println "Expected:" exp)
+          (println "Actual:  " act)
+          (assert false)))))
+
+  )

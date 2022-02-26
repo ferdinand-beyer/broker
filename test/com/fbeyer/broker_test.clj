@@ -1,6 +1,7 @@
 (ns com.fbeyer.broker-test
   (:require [clojure.core.async :as async]
             [clojure.core.async.impl.protocols :as async-impl]
+            [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
             [com.fbeyer.broker :as broker]))
 
@@ -50,16 +51,25 @@
       (is (= [[::topic1 "first"] [::topic2 "second"] [::topic1 "fourth"]]
              @msgs))))
 
-  (testing "updating to additional topics"
+  (testing "updating a subscription to additional topics"
     (let [broker (broker/start)
-          msgs   (atom [])
+          msgs   (atom #{})
           f      (partial swap! msgs conj)]
       (broker/subscribe broker ::a f)
       (broker/subscribe broker ::b f)
       (broker/publish! broker [::a])
       (broker/publish! broker [::b])
       (broker/shutdown! broker)
-      (is (= [[::a] [::b]] @msgs)))))
+      (is (= #{[::a] [::b]} @msgs)))))
+
+(deftest executor-test
+  (testing "execute in go block by default"
+    (let [broker (broker/start {:exec :go})
+          thread (atom nil)]
+      (broker/subscribe broker (fn [_] (reset! thread (Thread/currentThread))))
+      (broker/publish! broker [::go])
+      (broker/shutdown! broker)
+      (is (str/starts-with? (.getName @thread) "async-dispatch-")))))
 
 (deftest publish-chan-test
   (let [broker (broker/start)
