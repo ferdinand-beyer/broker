@@ -5,7 +5,7 @@
             [org.corfield.build :as bb]))
 
 (def lib 'com.fbeyer/broker)
-(def base-version "0.2")
+(def base-version "0.3")
 
 (defn- git [& args]
   (let [{:keys [exit out]}

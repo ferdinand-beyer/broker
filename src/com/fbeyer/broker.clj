@@ -168,18 +168,17 @@
             exec-ch (make-exec broker ch recp opts)]
         (assoc sub :ch ch :exec-ch exec-ch)))))
 
-(defn- delete-sub!
-  [{::keys [store]} {:keys [id ch exec-ch]}]
+(defn- stop-sub [{:keys [ch exec-ch]}]
   (when exec-ch
-    (async/close! ch))
-  (swap! store remove-sub id))
+    (async/close! ch)))
 
 (defn- unsub-topics
-  [{::keys [store] :as broker} {:keys [id] :as sub} topics]
+  [{::keys [store]} {:keys [id] :as sub} topics]
   (let [sub-topics   (:topics sub)
         unsub-topics (set/intersection sub-topics topics)]
     (if (= unsub-topics sub-topics)
-      (delete-sub! broker sub)
+      (do (stop-sub sub)
+          (swap! store remove-sub id))
       (swap! store remove-sub-topics id unsub-topics))))
 
 (defn- unsub-recp-topics
@@ -187,9 +186,9 @@
   (doseq [sub (recp-subs @store recp)]
     (unsub-topics broker sub topics)))
 
-(defmulti ^:private handle-cmd (fn [_broker cmd] (first cmd)))
+(defmulti ^:private -handle-cmd (fn [_broker cmd] (first cmd)))
 
-(defmethod handle-cmd :subscribe
+(defmethod -handle-cmd :subscribe
   [{::keys [store] :as broker} [_ recp opts topics]]
   (if-let [{:keys [id] :as sub} (find-recp-sub @store recp opts)]
     (let [new-topics (set/difference topics (:topics sub))]
@@ -200,39 +199,38 @@
       (unsub-recp-topics broker recp topics)
       (swap! store add-sub sub))))
 
-(defmethod handle-cmd :remove-closed-sub
+(defmethod -handle-cmd :remove-closed-sub
   [{::keys [store]} [_ id]]
   (swap! store remove-sub id))
 
-(defmethod handle-cmd :unsubscribe-recp
+(defmethod -handle-cmd :unsubscribe-recp
   [{::keys [store] :as broker} [_ recp]]
   (let [topics (recp-topics @store recp)]
     (unsub-recp-topics broker recp topics)))
 
-(defmethod handle-cmd :unsubscribe-recp-topics
+(defmethod -handle-cmd :unsubscribe-recp-topics
   [broker [_ recp topics]]
   (unsub-recp-topics broker recp topics))
 
-(defmethod handle-cmd :unsubscribe-all
+(defmethod -handle-cmd :unsubscribe-all
   [{::keys [store]} _]
-  (doseq [{:keys [ch exec-ch]} (all-subs @store)]
-    (when exec-ch
-      (async/close! ch)))
+  (doseq [sub (all-subs @store)]
+    (stop-sub sub))
   (reset! store empty-store))
 
-(defmethod handle-cmd :unsubscribe-topics
+(defmethod -handle-cmd :unsubscribe-topics
   [{::keys [store] :as broker} [_ topics]]
   (doseq [topic topics
           sub   (topic-subs @store topic)]
     (unsub-topics broker sub topics)))
 
-(defmethod handle-cmd :sync [_ [_ out]]
+(defmethod -handle-cmd :sync [_ [_ out]]
   (async/put! out true))
 
 (defn- run-control [{::keys [ctrl-ch] :as broker}]
   (async/go-loop []
     (when-some [cmd (async/<! ctrl-ch)]
-      (handle-cmd broker cmd)
+      (-handle-cmd broker cmd)
       (recur))))
 
 (defn- send-cmd [{::keys [ctrl-ch]} cmd]
@@ -256,7 +254,7 @@
             (reset! todo-cnt (count subs))
             (doseq [{:keys [id ch]} subs]
               (when-not (async/put! ch msg delivered)
-                (async/>! ctrl-ch [:remove-closed-sub id])))
+                (async/put! ctrl-ch [:remove-closed-sub id])))
             (async/<! done))
           (recur))
         (doseq [{:keys [ch]} (all-subs @store)]
@@ -326,7 +324,7 @@
    published messages will still be delivered.  Can be called multiple
    times.  Returns `nil`."
   [broker]
-  (doseq [k [::dispatch-ch ::ctrl-ch ::stop-ch]]
+  (doseq [k [::ctrl-ch ::dispatch-ch ::stop-ch]]
     (async/close! (broker k))))
 
 (defn shutdown!
