@@ -5,6 +5,12 @@
 
 ;; --- Store ---
 
+;; ? Rename to 'registry'?
+;; Optimised structure:
+;; - Index subscription by channel (instead of ID)
+;; - Index: topic->channel (fast lookup)
+;; - Index: recp->opt->channel (or ->sub, covering?)
+;; - Trash: ch->sub: Removed subs pending termination
 (def ^:private empty-store
   {:next-id  0
    :data     {}
@@ -77,6 +83,9 @@
   (->> (get-in store [:by-topic topic])
        (map (partial get-sub store))))
 
+;; ! This is called for every message to find matching subscriptions,
+;; should we optimise our data structure for this?
+;; E.g. maintain topic->ch map, use transducers?
 (defn- matching-subs [store topics]
   (->> (mapcat #(get-in store [:by-topic %]) topics)
        (into #{})
@@ -93,6 +102,7 @@
 (defn- null-chan []
   (async/chan (async/sliding-buffer 1) drop-all))
 
+;; ? Use the term 'loop'?
 (defmulti ^:private -make-exec
   (fn [broker _ch _f opts]
     (:exec opts (::exec broker))))
@@ -152,10 +162,10 @@
 (defn- make-chan [{::keys [buf-fn]} {:keys [chan]}]
   (or chan (async/chan (buf-fn))))
 
+;; --- Control ---
+
 (defn- write-port? [x]
   (satisfies? async-protocols/WritePort x))
-
-;; --- Control ---
 
 (defn- make-sub [broker recp opts topics]
   (let [sub {:recp   recp
@@ -172,6 +182,8 @@
   (when exec-ch
     (async/close! ch)))
 
+;; ? To make control tasks pure, put removed subs in a 'trash' area
+;; so that we can close them later? E.g. {:trash #{ch...}}
 (defn- unsub-topics
   [{::keys [store]} {:keys [id] :as sub} topics]
   (let [sub-topics   (:topics sub)
@@ -188,6 +200,12 @@
 
 (defmulti ^:private -handle-cmd (fn [_broker cmd] (first cmd)))
 
+;; ! Can we refactor to make every control command atomic (single swap)?
+;; The current implementation could potentially lose messages between
+;; 'unsub-old' and 'sub-new'.  We then might not need the control loop
+;; any longer, but run the occasional cleanup, e.g. triggered by a watch on
+;; the registry atom (close everything in trash, wait in go glock for
+;; completion, remove closed channels from the trash).
 (defmethod -handle-cmd :subscribe
   [{::keys [store] :as broker} [_ recp opts topics]]
   (if-let [{:keys [id] :as sub} (find-recp-sub @store recp opts)]
@@ -233,6 +251,7 @@
       (-handle-cmd broker cmd)
       (recur))))
 
+;; ? Better to support a reply-channel with every message instead of sync?
 (defn- send-cmd [{::keys [ctrl-ch]} cmd]
   (let [ch (async/chan 1)]
     (and (async/>!! ctrl-ch cmd)
@@ -312,6 +331,7 @@
    to block for a graceful shutdown."
   [broker]
   (async/go
+    ;; TODO: instead of stop-ch, wait for control + dispatch loops to close.
     (async/<! (::stop-ch broker))
     (let [ch (async/merge (exec-chans broker))]
       (loop []
