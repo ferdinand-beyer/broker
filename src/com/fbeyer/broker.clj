@@ -1,97 +1,7 @@
 (ns com.fbeyer.broker
   (:require [clojure.core.async :as async]
             [clojure.core.async.impl.protocols :as async-protocols]
-            [clojure.set :as set]))
-
-;; --- Store ---
-
-;; ? Rename to 'registry'?
-;; Optimised structure:
-;; - Index subscription by channel (instead of ID)
-;; - Index: topic->channel (fast lookup)
-;; - Index: recp->opt->channel (or ->sub, covering?)
-;; - Trash: ch->sub: Removed subs pending termination
-(def ^:private empty-store
-  {:next-id  0
-   :data     {}
-   :by-topic {}
-   :by-recp  {}})
-
-(defn- get-sub [store id]
-  (get-in store [:data id]))
-
-(def ^:private set-conj (fnil conj #{}))
-
-(defn- set-assoc [m k v]
-  (update m k set-conj v))
-
-(defn- set-dissoc [m k v]
-  (let [s (disj (get m k) v)]
-    (if (seq s)
-      (assoc m k s)
-      (dissoc m k))))
-
-(defn- update-topics [store topics f & args]
-  (update store :by-topic
-          (fn [tmap]
-            (reduce (fn [m k] (apply f m k args))
-                    tmap topics))))
-
-(defn- add-sub [store {:keys [recp topics] :as sub}]
-  (let [id (:next-id store)]
-    (-> store
-        (update :next-id inc)
-        (assoc-in [:data id] (assoc sub :id id))
-        (update-in [:by-recp recp] set-conj id)
-        (update-topics topics set-assoc id))))
-
-(defn- add-sub-topics [store id topics]
-  (-> store
-      (update-in [:data id :topics] set/union topics)
-      (update-topics topics set-assoc id)))
-
-(defn- remove-sub [store id]
-  (let [{:keys [recp topics]} (get-in store [:data id])]
-    (-> store
-        (update :data dissoc id)
-        (update :by-recp set-dissoc recp id)
-        (update-topics topics set-dissoc id))))
-
-(defn- remove-sub-topics [store id topics]
-  (-> store
-      (update-in [:data id :topics] set/difference topics)
-      (update-topics topics set-dissoc id)))
-
-(defn- all-subs [store]
-  (-> store :data vals))
-
-(defn- recp-subs [store recp]
-  (->> (get-in store [:by-recp recp])
-       (map (partial get-sub store))))
-
-(defn- recp-topics [store recp]
-  (->> (recp-subs store recp)
-       (mapcat :topics)
-       (into #{})))
-
-(defn- find-recp-sub [store recp opts]
-  (->> (recp-subs store recp)
-       (filter #(= opts (:opts %)))
-       first))
-
-(defn- topic-subs [store topic]
-  (->> (get-in store [:by-topic topic])
-       (map (partial get-sub store))))
-
-;; ! This is called for every message to find matching subscriptions,
-;; should we optimise our data structure for this?
-;; E.g. maintain topic->ch map, use transducers?
-(defn- matching-subs [store topics]
-  (->> (mapcat #(get-in store [:by-topic %]) topics)
-       (into #{})
-       (map (partial get-sub store))))
-
-;; --- Executors ---
+            [com.fbeyer.broker.impl.registry :as registry]))
 
 (defn- drop-all [rf]
   (fn
@@ -162,15 +72,11 @@
 (defn- make-chan [{::keys [buf-fn]} {:keys [chan]}]
   (or chan (async/chan (buf-fn))))
 
-;; --- Control ---
-
 (defn- write-port? [x]
   (satisfies? async-protocols/WritePort x))
 
-(defn- make-sub [broker recp opts topics]
-  (let [sub {:recp   recp
-             :opts   opts
-             :topics topics}]
+(defn- make-sub [broker recp opts]
+  (let [sub {}]
     (if (write-port? recp)
       (do (assert (nil? opts))
           (assoc sub :ch recp))
@@ -178,89 +84,7 @@
             exec-ch (make-exec broker ch recp opts)]
         (assoc sub :ch ch :exec-ch exec-ch)))))
 
-(defn- stop-sub [{:keys [ch exec-ch]}]
-  (when exec-ch
-    (async/close! ch)))
-
-;; ? To make control tasks pure, put removed subs in a 'trash' area
-;; so that we can close them later? E.g. {:trash #{ch...}}
-(defn- unsub-topics
-  [{::keys [store]} {:keys [id] :as sub} topics]
-  (let [sub-topics   (:topics sub)
-        unsub-topics (set/intersection sub-topics topics)]
-    (if (= unsub-topics sub-topics)
-      (do (stop-sub sub)
-          (swap! store remove-sub id))
-      (swap! store remove-sub-topics id unsub-topics))))
-
-(defn- unsub-recp-topics
-  [{::keys [store] :as broker} recp topics]
-  (doseq [sub (recp-subs @store recp)]
-    (unsub-topics broker sub topics)))
-
-(defmulti ^:private -handle-cmd (fn [_broker cmd] (first cmd)))
-
-;; ! Can we refactor to make every control command atomic (single swap)?
-;; The current implementation could potentially lose messages between
-;; 'unsub-old' and 'sub-new'.  We then might not need the control loop
-;; any longer, but run the occasional cleanup, e.g. triggered by a watch on
-;; the registry atom (close everything in trash, wait in go glock for
-;; completion, remove closed channels from the trash).
-(defmethod -handle-cmd :subscribe
-  [{::keys [store] :as broker} [_ recp opts topics]]
-  (if-let [{:keys [id] :as sub} (find-recp-sub @store recp opts)]
-    (let [new-topics (set/difference topics (:topics sub))]
-      (when (seq new-topics)
-        (unsub-recp-topics broker recp new-topics)
-        (swap! store add-sub-topics id new-topics)))
-    (let [sub (make-sub broker recp opts topics)]
-      (unsub-recp-topics broker recp topics)
-      (swap! store add-sub sub))))
-
-(defmethod -handle-cmd :remove-closed-sub
-  [{::keys [store]} [_ id]]
-  (swap! store remove-sub id))
-
-(defmethod -handle-cmd :unsubscribe-recp
-  [{::keys [store] :as broker} [_ recp]]
-  (let [topics (recp-topics @store recp)]
-    (unsub-recp-topics broker recp topics)))
-
-(defmethod -handle-cmd :unsubscribe-recp-topics
-  [broker [_ recp topics]]
-  (unsub-recp-topics broker recp topics))
-
-(defmethod -handle-cmd :unsubscribe-all
-  [{::keys [store]} _]
-  (doseq [sub (all-subs @store)]
-    (stop-sub sub))
-  (reset! store empty-store))
-
-(defmethod -handle-cmd :unsubscribe-topics
-  [{::keys [store] :as broker} [_ topics]]
-  (doseq [topic topics
-          sub   (topic-subs @store topic)]
-    (unsub-topics broker sub topics)))
-
-(defmethod -handle-cmd :sync [_ [_ out]]
-  (async/put! out true))
-
-(defn- run-control [{::keys [ctrl-ch] :as broker}]
-  (async/go-loop []
-    (when-some [cmd (async/<! ctrl-ch)]
-      (-handle-cmd broker cmd)
-      (recur))))
-
-;; ? Better to support a reply-channel with every message instead of sync?
-(defn- send-cmd [{::keys [ctrl-ch]} cmd]
-  (let [ch (async/chan 1)]
-    (and (async/>!! ctrl-ch cmd)
-         (async/>!! ctrl-ch [:sync ch])
-         (async/<!! ch))))
-
-;; --- Dispatch ---
-
-(defn- run-dispatch [{::keys [dispatch-ch ctrl-ch topic-fn store]}]
+(defn- run-dispatch [dispatch-ch topic-fn registry]
   (let [todo-cnt  (atom nil)
         done      (async/chan 1)
         delivered (fn [_] (when (zero? (swap! todo-cnt dec))
@@ -268,18 +92,17 @@
     (async/go-loop []
       (if-some [msg (async/<! dispatch-ch)]
         (let [topic (topic-fn msg)
-              subs  (matching-subs @store [::all topic])]
-          (when (seq subs)
-            (reset! todo-cnt (count subs))
-            (doseq [{:keys [id ch]} subs]
+              chs   (registry/topics->chans @registry [::all topic])]
+          (when (seq chs)
+            (reset! todo-cnt (count chs))
+            (doseq [ch chs]
               (when-not (async/put! ch msg delivered)
-                (async/put! ctrl-ch [:remove-closed-sub id])))
+                ;; TODO: Pass trash? => false (?)
+                (swap! registry registry/remove-sub ch)))
             (async/<! done))
           (recur))
-        (doseq [{:keys [ch]} (all-subs @store)]
+        (doseq [{:keys [ch]} (registry/all-subs @registry)]
           (async/close! ch))))))
-
-;; --- Broker ---
 
 (defn- thread-uncaught-exc-handler
   [e _]
@@ -308,35 +131,34 @@
    * `:exec` - default subscription execution type -- see [[subscribe]]."
   ([] (start nil))
   ([opts]
-   (let [broker {::dispatch-ch (async/chan (:buf-or-n opts 1024)
-                                           (:xform opts))
-                 ::ctrl-ch     (async/chan)
-                 ::stop-ch     (async/chan)
-                 ::store       (atom empty-store)
-                 ::topic-fn    (:topic-fn opts first)
-                 ::buf-fn      (:buf-fn opts (constantly 8))
-                 ::error-fn    (:error-fn opts thread-uncaught-exc-handler)
-                 ::exec        (:exec opts :sequential)}]
-     ;; TODO: Save those channels (e.g. instead of stop channel)?
-     (run-control broker)
-     (run-dispatch broker)
-     broker)))
+   (let [registry    (atom registry/empty-registry)
+         dispatch-ch (async/chan (:buf-or-n opts 1024)
+                                 (:xform opts))
+         loop-ch     (run-dispatch dispatch-ch (:topic-fn opts first) registry)]
+     {::registry    registry
+      ::dispatch-ch dispatch-ch
+      ::loop-ch     loop-ch
+      ::buf-fn      (:buf-fn opts (constantly 8))
+      ::error-fn    (:error-fn opts thread-uncaught-exc-handler)
+      ::exec        (:exec opts :sequential)})))
 
-(defn- exec-chans [{::keys [store]}]
-  (keep :exec-ch (all-subs @store)))
+(defn- loop-chans [registry]
+  (->> (concat (registry/all-subs registry)
+               (registry/removed-subs registry))
+       (keep :exec-ch)))
 
 (defn stop-chan
   "Returns a channel that will close when the broker stops and all
    pending messages are processed by the subscribers.  Can be used
    to block for a graceful shutdown."
   [broker]
-  (async/go
-    ;; TODO: instead of stop-ch, wait for control + dispatch loops to close.
-    (async/<! (::stop-ch broker))
-    (let [ch (async/merge (exec-chans broker))]
-      (loop []
-        (when (async/<! ch)
-          (recur))))))
+  (let [{::keys [loop-ch registry]} broker]
+    (async/go
+      (async/<! loop-ch)
+      (let [ch (async/merge (loop-chans @registry))]
+        (loop []
+          (when (async/<! ch)
+            (recur)))))))
 
 (defn stop!
   "Stops the broker, closing all internal async channels.
@@ -344,8 +166,7 @@
    published messages will still be delivered.  Can be called multiple
    times.  Returns `nil`."
   [broker]
-  (doseq [k [::ctrl-ch ::dispatch-ch ::stop-ch]]
-    (async/close! (broker k))))
+  (async/close! (::dispatch-ch broker)))
 
 (defn shutdown!
   "Stops the broker and waits for all messages to be processed, or `timeout-ms`
@@ -375,7 +196,7 @@
    Intended for publishing from a `(go ...)` block or advanced usage
    such as bulk publishing / piping into the broker.
 
-   The caller must not close the returned channel."
+   Closing the returned channel will stop the broker."
   [broker]
   (::dispatch-ch broker))
 
@@ -384,6 +205,10 @@
     (nil? topics)        #{::all}
     (sequential? topics) (set topics)
     :else                #{topics}))
+
+(defn- update-registry! [{::keys [registry]} f & args]
+  ;; TODO: Cleanup trash
+  (apply swap! registry f args))
 
 (defn subscribe
   "Subscribes to messages from the broker.
@@ -420,7 +245,11 @@
      (subscribe broker nil topic-or-f f-or-opts)
      (subscribe broker topic-or-f f-or-opts nil)))
   ([broker topic f opts]
-   (send-cmd broker [:subscribe f opts (topics->set topic)])))
+   (let [sub       (delay (make-sub broker f opts))
+         reg-after (update-registry! broker registry/subscribe
+                                     f opts (topics->set topic) (partial force sub))]
+     ;; TODO: when realized? sub and not= (recp opts)->ch => close/trash sub
+     nil)))
 
 (defn unsubscribe
   "Unsubscribes a function or channel.
@@ -430,15 +259,19 @@
 
    If `f` is not a subscriber, this is a no-op.  Returns `nil`."
   ([broker f]
-   (send-cmd broker [:unsubscribe-recp f]))
+   (update-registry! broker registry/remove-recp f)
+   nil)
   ([broker topic f]
-   (send-cmd broker [:unsubscribe-recp-topics f (topics->set topic)])))
+   (update-registry! broker registry/remove-recp-topics f (topics->set topic))
+   nil))
 
 (defn unsubscribe-all
   "Unsubscribes all subscribers.
    When a `topic` is given, only subscribers to the given topic will be
    unsubscribed.  Returns `nil`."
   ([broker]
-   (send-cmd broker [:unsubscribe-all]))
+   (update-registry! broker registry/remove-all)
+   nil)
   ([broker topic]
-   (send-cmd broker [:unsubscribe-topics (topics->set topic)])))
+   (update-registry! broker registry/remove-topics (topics->set topic))
+   nil))
