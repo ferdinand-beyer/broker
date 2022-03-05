@@ -75,13 +75,13 @@
 (defn- write-port? [x]
   (satisfies? async-protocols/WritePort x))
 
-(defn- make-sub [broker recp opts]
+(defn- make-sub [broker recv opts]
   (let [sub {}]
-    (if (write-port? recp)
+    (if (write-port? recv)
       (do (assert (nil? opts))
-          (assoc sub :ch recp))
+          (assoc sub :ch recv))
       (let [ch      (make-chan broker opts)
-            exec-ch (make-exec broker ch recp opts)]
+            exec-ch (make-exec broker ch recv opts)]
         (assoc sub :ch ch :exec-ch exec-ch)))))
 
 (defn- run-dispatch [dispatch-ch topic-fn registry]
@@ -97,12 +97,30 @@
             (reset! todo-cnt (count chs))
             (doseq [ch chs]
               (when-not (async/put! ch msg delivered)
-                ;; TODO: Pass trash? => false (?)
-                (swap! registry registry/remove-sub ch)))
+                (swap! registry registry/remove-sub ch false)))
             (async/<! done))
           (recur))
         (doseq [{:keys [ch]} (registry/all-subs @registry)]
           (async/close! ch))))))
+
+(defn- close-removed [registry ch exec-ch]
+  (async/go-loop []
+    (if-some [_ (async/<! exec-ch)]
+      (recur)
+      (swap! registry registry/clear-removed ch)))
+  (async/close! ch))
+
+(defn- run-cleanup
+  "Watches `registry` and closes removed subscriptions."
+  [registry]
+  (add-watch registry ::cleanup
+             (fn [_ _ old-reg new-reg]
+               (let [old (registry/removed-map old-reg)
+                     new (registry/removed-map new-reg)]
+                 (when (not= old new)
+                   (doseq [[ch {:keys [exec-ch]}] new
+                           :when (nil? (old ch))]
+                     (close-removed registry ch exec-ch)))))))
 
 (defn- thread-uncaught-exc-handler
   [e _]
@@ -134,7 +152,8 @@
    (let [registry    (atom registry/empty-registry)
          dispatch-ch (async/chan (:buf-or-n opts 1024)
                                  (:xform opts))
-         loop-ch     (run-dispatch dispatch-ch (:topic-fn opts first) registry)]
+         loop-ch     (run-dispatch dispatch-ch (:topic-fn opts first) registry)
+         _           (run-cleanup registry)]
      {::registry    registry
       ::dispatch-ch dispatch-ch
       ::loop-ch     loop-ch
@@ -206,10 +225,6 @@
     (sequential? topics) (set topics)
     :else                #{topics}))
 
-(defn- update-registry! [{::keys [registry]} f & args]
-  ;; TODO: Cleanup trash
-  (apply swap! registry f args))
-
 (defn subscribe
   "Subscribes to messages from the broker.
 
@@ -245,10 +260,17 @@
      (subscribe broker nil topic-or-f f-or-opts)
      (subscribe broker topic-or-f f-or-opts nil)))
   ([broker topic f opts]
-   (let [sub       (delay (make-sub broker f opts))
-         reg-after (update-registry! broker registry/subscribe
-                                     f opts (topics->set topic) (partial force sub))]
-     ;; TODO: when realized? sub and not= (recp opts)->ch => close/trash sub
+   (let [registry  (::registry broker)
+         sub       (delay (make-sub broker f opts))
+         reg-after (swap! registry registry/subscribe f opts (topics->set topic)
+                          (partial force sub))]
+     (when (realized? sub)
+       ;; When subscribe is called concurrently for the same receiver,
+       ;; swap! might be called multiple times and end up not using our
+       ;; newly created subscription.  Clean up when that happens.
+       (let [ch (:ch @sub)]
+         (when-not (= ch (registry/recv-ch reg-after f opts))
+           (async/close! ch))))
      nil)))
 
 (defn unsubscribe
@@ -259,10 +281,10 @@
 
    If `f` is not a subscriber, this is a no-op.  Returns `nil`."
   ([broker f]
-   (update-registry! broker registry/remove-recp f)
+   (swap! (::registry broker) registry/remove-recv f)
    nil)
   ([broker topic f]
-   (update-registry! broker registry/remove-recp-topics f (topics->set topic))
+   (swap! (::registry broker) registry/remove-recv-topics f (topics->set topic))
    nil))
 
 (defn unsubscribe-all
@@ -270,8 +292,8 @@
    When a `topic` is given, only subscribers to the given topic will be
    unsubscribed.  Returns `nil`."
   ([broker]
-   (update-registry! broker registry/remove-all)
+   (swap! (::registry broker) registry/remove-all)
    nil)
   ([broker topic]
-   (update-registry! broker registry/remove-topics (topics->set topic))
+   (swap! (::registry broker) registry/remove-topics (topics->set topic))
    nil))

@@ -4,13 +4,10 @@
 
 (def empty-registry
   {:cs  {} ; ch->sub
-   :roc {} ; recp->opts->ch
+   :roc {} ; recv->opts->ch
    :tc  {} ; topic->ch
    :cs! {} ; ch->sub (removed)
    })
-
-(defn- get-sub [registry ch]
-  (get-in registry [:cs ch]))
 
 (defn all-subs [registry]
   (-> registry :cs vals))
@@ -18,23 +15,8 @@
 (defn topics->chans [registry topics]
   (into #{} (mapcat #(get-in registry [:tc %])) topics))
 
-(defn recp-subs [registry recp]
-  (->> (get-in registry [:roc recp])
-       vals
-       (map (partial get-sub registry))))
-
-(defn recp-topics [registry recp]
-  (->> (recp-subs registry recp)
-       (mapcat :topics)
-       (into #{})))
-
-(defn sub-by-recp-opts [registry recp opts]
-  (when-let [ch (get-in registry [:roc recp opts])]
-    (get-sub registry ch)))
-
-(defn topic-subs [registry topic]
-  (->> (get-in registry [:tc topic])
-       (map (partial get-sub registry))))
+(defn recv-ch [registry recv opts]
+  (get-in registry [:roc recv opts]))
 
 (def ^:private set-conj (fnil conj #{}))
 
@@ -53,10 +35,10 @@
             (reduce (fn [m k] (apply f m k args))
                     tmap topics))))
 
-(defn add-sub [registry {:keys [ch recp opts topics] :as sub}]
+(defn add-sub [registry {:keys [ch recv opts topics] :as sub}]
   (-> registry
       (assoc-in [:cs ch] sub)
-      (assoc-in [:roc recp opts] ch)
+      (assoc-in [:roc recv opts] ch)
       (update-topics topics set-assoc ch)))
 
 (defn add-sub-topics [registry ch topics]
@@ -64,17 +46,20 @@
       (update-in [:cs ch :topics] set/union topics)
       (update-topics topics set-assoc ch)))
 
-(defn remove-sub [registry ch]
-  (let [{:keys [recp opts topics exec-ch] :as sub} (get-in registry [:cs ch])
-        oc       (-> (get-in registry [:roc recp])
-                     (dissoc opts))
-        registry (-> registry
-                     (update :cs dissoc ch)
-                     (update-topics topics set-dissoc ch)
-                     (cond-> (some? exec-ch) (assoc-in [:cs! ch] sub)))]
-    (if (seq oc)
-      (update-in registry [:roc recp] oc)
-      (update registry :roc dissoc recp))))
+(defn remove-sub
+  ([registry ch] (remove-sub registry ch true))
+  ([registry ch trash?]
+   (let [{:keys [recv opts topics exec-ch] :as sub} (get-in registry [:cs ch])
+         opts->ch (-> (get-in registry [:roc recv])
+                      (dissoc opts))
+         registry (-> registry
+                      (update :cs dissoc ch)
+                      (update-topics topics set-dissoc ch)
+                      (cond-> (and trash? (some? exec-ch))
+                        (assoc-in [:cs! ch] sub)))]
+     (if (seq opts->ch)
+       (update-in registry [:roc recv] opts->ch)
+       (update registry :roc dissoc recv)))))
 
 (defn remove-sub-topics [registry ch topics]
   (let [remain (set/difference (get-in registry [:cs ch :topics]) topics)]
@@ -93,19 +78,22 @@
           registry
           (topics->chans registry topics)))
 
-(defn remove-recp
-  [registry recp]
-  (->> (get-in registry [:roc recp])
+(defn remove-recv
+  [registry recv]
+  (->> (get-in registry [:roc recv])
        vals
        (reduce remove-sub registry)))
 
-(defn remove-recp-topics
-  [registry recp topics]
-  (->> (get-in registry [:roc recp])
+(defn remove-recv-topics
+  [registry recv topics]
+  (->> (get-in registry [:roc recv])
        vals
        (reduce (fn [r ch]
                  (remove-sub-topics r ch topics))
                registry)))
+
+(defn removed-map [registry]
+  (:cs! registry))
 
 (defn removed-subs [registry]
   (-> registry :cs! vals))
@@ -113,18 +101,18 @@
 (defn clear-removed [registry ch]
   (update registry :cs! dissoc ch))
 
-(defn subscribe [registry recp opts topics make-sub]
-  (if-let [ch (get-in registry [:roc recp opts])]
+(defn subscribe [registry recv opts topics make-sub]
+  (if-let [ch (get-in registry [:roc recv opts])]
     (let [old-topics (get-in registry [:cs ch :topics])
           new-topics (set/difference topics old-topics)]
       (if (seq new-topics)
         (-> registry
-            (remove-recp-topics recp new-topics)
+            (remove-recv-topics recv new-topics)
             (add-sub-topics ch new-topics))
         registry))
     (-> registry
-        (remove-recp-topics recp topics)
+        (remove-recv-topics recv topics)
         (add-sub (assoc (make-sub)
-                        :recp recp
+                        :recv recv
                         :opts opts
                         :topics topics)))))
