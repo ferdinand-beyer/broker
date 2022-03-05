@@ -48,14 +48,14 @@
 
 (defn remove-sub
   ([registry ch] (remove-sub registry ch true))
-  ([registry ch trash?]
+  ([registry ch close?]
    (let [{:keys [recv opts topics exec-ch] :as sub} (get-in registry [:cs ch])
          opts->ch (-> (get-in registry [:roc recv])
                       (dissoc opts))
          registry (-> registry
                       (update :cs dissoc ch)
                       (update-topics topics set-dissoc ch)
-                      (cond-> (and trash? (some? exec-ch))
+                      (cond-> (and close? (some? exec-ch))
                         (assoc-in [:cs! ch] sub)))]
      (if (seq opts->ch)
        (update-in registry [:roc recv] opts->ch)

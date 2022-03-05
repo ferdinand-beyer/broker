@@ -76,13 +76,11 @@
   (satisfies? async-protocols/WritePort x))
 
 (defn- make-sub [broker recv opts]
-  (let [sub {}]
-    (if (write-port? recv)
-      (do (assert (nil? opts))
-          (assoc sub :ch recv))
-      (let [ch      (make-chan broker opts)
-            exec-ch (make-exec broker ch recv opts)]
-        (assoc sub :ch ch :exec-ch exec-ch)))))
+  (if (write-port? recv)
+    {:ch recv}
+    (let [ch (make-chan broker opts)]
+      {:ch ch
+       :exec-ch (make-exec broker ch recv opts)})))
 
 (defn- run-dispatch [dispatch-ch topic-fn registry]
   (let [todo-cnt  (atom nil)
