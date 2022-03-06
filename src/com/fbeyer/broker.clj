@@ -166,7 +166,7 @@
 
 (defn stop-chan
   "Returns a channel that will close when the broker stops and all
-   pending messages are processed by the subscribers.  Can be used
+   pending messages have been processed by the subscribers.  Can be used
    to block for a graceful shutdown."
   [broker]
   (let [{::keys [loop-ch registry]} broker]
