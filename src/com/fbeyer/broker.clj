@@ -188,7 +188,10 @@
 (defn shutdown!
   "Stops the broker and waits for all messages to be processed, or `timeout-ms`
    to pass.  Returns `true` when successfully stopped, or `false` on timeout."
-  ([broker] (shutdown! broker 60000))
+  ([broker]
+   (stop! broker)
+   (async/<!! (stop-chan broker))
+   true)
   ([broker timeout-ms]
    (stop! broker)
    (async/alt!!
