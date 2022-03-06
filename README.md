@@ -38,11 +38,13 @@ use `subscribe`:
 (defn notify-hello [[_ name]]]
   (println "Hello," (:name name)))
 
+;; Subscribe to the :hello topic
 (broker/subscribe broker :hello notify-hello)
 
 (broker/publish! broker [:hello "Broker!"])
 ; Hello, Broker!
 
+;; Subscribe to all messages
 (broker/subscribe broker #(println "Observed:" %))
 
 (broker/publish! broker [:hello "All!"])
@@ -61,7 +63,6 @@ To customize the message format, you can supply a `:topic-fn`:
 
 (broker/publish! broker {:msg/topic :my.domain/widget-created})
 ```
-
 
 Under the hood, `broker` uses [`core.async`][core.async].  Instead of
 functions, you can also subscribe with async channels:
@@ -96,6 +97,14 @@ You can stop the router with `stop!`:
 ;; This has no effect:
 (broker/publish! broker [:more]) ; => false
 ```
+
+To block the current thread until all published messages have been
+delivered, use `shutdown!`:
+
+```clojure
+(broker/shutdown! broker)
+```
+
 
 ## License
 
